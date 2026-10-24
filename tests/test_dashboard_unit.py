@@ -136,7 +136,7 @@ def test_existing_routes_still_registered() -> None:
 def test_navigation_has_every_section_in_order(local) -> None:
     html = local.get("/dashboard").text
     tabs = re.findall(r'role="tab" id="tab-(\w+)"', html)
-    assert tabs == ["overview", "websites", "inbox", "receipts", "activity", "check", "settings"]
+    assert tabs == ["overview", "websites", "inbox", "sms", "receipts", "activity", "check", "settings"]
     for panel in tabs:
         assert f'id="view-{panel}" role="tabpanel" aria-labelledby="tab-{panel}"' in html
     filters = re.findall(r'data-filter="(\w+)" aria-pressed', html)
@@ -184,3 +184,58 @@ def test_inbox_text_uses_stored_identity_and_never_invents_one() -> None:
     assert deleted["identity"] == "an unknown alias" and deleted["sender"] == "Unknown sender"
     assert deleted["reason"].startswith("Not linked to any of your websites")
     assert nick["reason"] is None
+
+
+# Loads app.js with a stub document and runs the pure chart helpers.
+CHART = """
+const vm = require("node:vm");
+const fs = require("node:fs");
+const context = { document: { addEventListener() {} }, Intl, console };
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8") + `
+  globalThis.__run = (c) => ({ days: emailsPerDay(c.times, { now: new Date(c.now), days: c.days, complete: c.complete }),
+                               pct: c.pct.map(([a, b]) => percentText(a, b)) });`, context);
+process.stdout.write(JSON.stringify(JSON.parse(fs.readFileSync(0, "utf8")).map((c) => context.__run(c))));
+"""
+
+
+def run_chart(cases: list[dict]) -> list[dict]:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    out = subprocess.run([node, "-e", CHART, str(DASHBOARD_DIR / "app.js")], input=json.dumps(cases),
+                         capture_output=True, text=True, timeout=30, check=True)
+    return json.loads(out.stdout)
+
+
+def test_chart_counts_real_days_and_never_invents_missing_ones() -> None:
+    now = "2026-10-24T15:00:00Z"
+    complete, cut_off, empty = run_chart([
+        {"times": ["2026-10-24T09:00:00Z", "2026-10-24T01:00:00Z", "2026-10-22T23:59:59Z", "2026-10-01T00:00:00Z",
+                   "not a date"], "now": now, "days": 4, "complete": True, "pct": [[1, 3], [0, 0], [1, 400], [2, 2]]},
+        # Cut off at the page size: the oldest loaded day may be partial, older days were not loaded.
+        {"times": ["2026-10-24T09:00:00Z", "2026-10-23T10:00:00Z", "2026-10-23T08:00:00Z"],
+         "now": now, "days": 4, "complete": False, "pct": []},
+        {"times": [], "now": now, "days": 2, "complete": True, "pct": []},
+    ])
+    assert complete["days"] == [
+        {"date": "2026-10-21", "count": 0, "covered": True}, {"date": "2026-10-22", "count": 1, "covered": True},
+        {"date": "2026-10-23", "count": 0, "covered": True}, {"date": "2026-10-24", "count": 2, "covered": True},
+    ]
+    assert complete["pct"] == ["33%", "0%", "<1%", "100%"]
+    assert [(d["count"], d["covered"]) for d in cut_off["days"]] == [(None, False), (None, False), (None, False), (1, True)]
+    assert [d["count"] for d in empty["days"]] == [0, 0]
+
+
+def test_page_is_csp_safe_and_has_the_new_shell(local) -> None:
+    html = local.get("/dashboard").text
+    assert 'style="' not in html  # inline style attributes are blocked by the CSP
+    for marker in ('id="sidebar"', 'aria-orientation="vertical"', 'id="nav-open"', 'id="theme-toggle"',
+                   '<dialog id="alias-dialog"', '<dialog id="confirm-dialog"', 'id="toasts"', 'id="email-chart"',
+                   'id="match-breakdown"', 'id="new-alias"', '<template id="icon-template">'):
+        assert marker in html, marker
+    js = (DASHBOARD_DIR / "app.js").read_text()
+    used = (set(re.findall(r'href="#i-([a-z-]+)"', html)) | set(re.findall(r'icon\("([a-z-]+)"', js))
+            | set(re.findall(r'iconName: "([a-z-]+)"', js)))
+    defined = set(re.findall(r'<symbol id="i-([a-z-]+)"', html))
+    assert used and used <= defined, used - defined  # every icon used exists in the sprite

@@ -36,6 +36,9 @@ from backend.schemas.dashboard import (
     OverviewResponse,
     SignupDetailResponse,
     SignupReceipt,
+    SignupSms,
+    Timeline,
+    TimelineItem,
 )
 from backend.schemas.signup import MAX_BIGINT
 from backend.security import require_user
@@ -136,6 +139,10 @@ def get_signup(
             recorded_at=r.created_at, reported_occurred_at=r.reported_occurred_at, source_url=r.source_url,
         ) for r in detail.receipts],
         emails=[DashboardEmail.model_validate(e) for e in detail.emails],
+        sms_investigations=[SignupSms(
+            id=i.id, created_at=i.created_at, status=i.result,
+            confirmed=((i.evidence or {}).get("confirmed") or {}).get("signup_id") == s.id,
+        ) for i in detail.sms],
     )
 
 
@@ -238,3 +245,12 @@ async def set_inbox_read(
     if row is None:
         raise INBOX_NOT_FOUND
     return InboxItem.model_validate(row)
+
+
+@router.get("/api/timeline", response_model=Timeline)
+def get_timeline(
+    limit: int = Query(30, ge=1, le=MAX_PAGE_SIZE),
+    auth: AuthContext = Depends(require_user), db: Session = Depends(get_db),
+) -> Timeline:
+    """Your email and saved SMS investigations, newest first."""
+    return Timeline(items=[TimelineItem.model_validate(i) for i in dashboard.timeline(db, auth.user_id, limit)])

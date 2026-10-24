@@ -60,11 +60,11 @@ app = FastAPI(
 if settings.app_mode == "ingest":
     ROUTERS = (health.router, ingest.router)
 else:
-    from backend.routes import auth, autofill, consent_receipts, dashboard, extension, matcher, signups
+    from backend.routes import auth, autofill, consent_receipts, dashboard, extension, matcher, signups, sms
 
     ROUTERS = (
         health.router, auth.router, auth.account_router, extension.router, signups.router, matcher.router,
-        ingest.router, dashboard.router, consent_receipts.router, autofill.router,
+        ingest.router, dashboard.router, sms.router, consent_receipts.router, autofill.router,
     )
 for _router in ROUTERS:
     app.include_router(_router)

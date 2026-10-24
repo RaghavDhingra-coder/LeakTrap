@@ -130,6 +130,7 @@ class SignupDetail:
     signup: Signup
     receipts: list[ConsentReceipt]
     emails: list["EmailRow"]
+    sms: list[Incident]
 
 
 def get_signup_detail(session: Session, user_id: int, signup_id: int, recent: int = 20) -> SignupDetail | None:
@@ -145,7 +146,9 @@ def get_signup_detail(session: Session, user_id: int, signup_id: int, recent: in
         _email_query(user_id).where(MailLog.signup_id == signup.id)
         .order_by(MailLog.received_at.desc(), MailLog.id.desc()).limit(recent)
     ).all()
-    return SignupDetail(signup, list(receipts), [_email_row(*row) for row in emails])
+    from backend.services.sms_investigations import linked_to_signup
+    return SignupDetail(signup, list(receipts), [_email_row(*row) for row in emails],
+                        linked_to_signup(session, user_id, signup.id, recent))
 
 
 # ---------- email activity ----------
@@ -385,3 +388,61 @@ def inbox_updates(session: Session, user_id: int, after_id: int | None, limit: i
         ).all()
         new = [_inbox_row(*row) for row in rows]
     return InboxUpdates(unread_count(session, user_id), latest, new)
+
+
+# ---------- cross-channel timeline ----------
+
+@dataclass(frozen=True)
+class TimelineItem:
+    channel: str
+    id: int
+    at: datetime
+    title: str
+    status: str | None
+    site_name: str | None
+    signup_id: int | None
+    linked: bool
+
+
+def timeline(session: Session, user_id: int, limit: int = 30) -> list[TimelineItem]:
+    """The user's email and saved SMS investigations, newest first.
+
+    An item is linked to a website only by an exact alias (email) or by the
+    user's own confirmation (SMS); a shared company name never links records.
+    """
+    items: list[TimelineItem] = []
+    mail = session.execute(
+        select(MailLog, Signup).outerjoin(Signup, and_(MailLog.signup_id == Signup.id, owned_by(Signup.user_id, user_id)))
+        .where(owned_by(MailLog.user_id, user_id)).order_by(MailLog.received_at.desc(), MailLog.id.desc()).limit(limit)
+    ).all()
+    for log, signup in mail:
+        items.append(TimelineItem(
+            "email", log.id, log.received_at, f"Email to {log.alias}" if log.alias else "Email",
+            _inbox_row(log, signup).status, signup.site_name if signup else None, signup.id if signup else None,
+            signup is not None,
+        ))
+    sms = session.scalars(
+        select(Incident).where(owned_by(Incident.user_id, user_id), Incident.channel == "sms",
+                               Incident.evidence["source"].astext == "sms_analyzer")
+        .order_by(Incident.created_at.desc(), Incident.id.desc()).limit(limit)
+    ).all()
+    for incident in sms:
+        evidence = incident.evidence or {}
+        confirmed = evidence.get("confirmed") or {}
+        sender_type = (evidence.get("sender") or {}).get("type")
+        title = {"phone": "SMS from a phone number", "short_code": "SMS from a short code",
+                 "alphanumeric": f"SMS from {(evidence.get('sender') or {}).get('value')}",
+                 "email": "SMS from an email address"}.get(sender_type, "SMS from an unknown sender")
+        # When the user said they received it, else when it was saved.
+        at = incident.created_at
+        if evidence.get("received_at"):
+            try:
+                at = datetime.fromisoformat(evidence["received_at"])
+            except ValueError:
+                pass
+        items.append(TimelineItem(
+            "sms", incident.id, at, title, incident.result, incident.matched_site,
+            confirmed.get("signup_id") if isinstance(confirmed.get("signup_id"), int) else None, bool(confirmed),
+        ))
+    items.sort(key=lambda i: (i.at, i.id), reverse=True)
+    return items[:limit]

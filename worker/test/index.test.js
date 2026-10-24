@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 
-import worker, { PAYLOAD_FIELDS, buildPayload, handleEmail } from "../src/index.js";
+import worker, { PAYLOAD_FIELDS, buildPayload, handleEmail, ingestSecretProblem, parseFallbackAddress } from "../src/index.js";
 
 const SECRET = "s".repeat(40);
 const ENV = {
@@ -44,17 +44,44 @@ function fakeFetch(result) {
 
 let logged;
 const originalError = console.error;
+const originalLog = console.log;
 beforeEach(() => {
   logged = [];
   console.error = (...args) => logged.push(args.join(" "));
+  console.log = (...args) => logged.push(args.join(" "));
 });
-afterEach(() => { console.error = originalError; });
+afterEach(() => { console.error = originalError; console.log = originalLog; });
 
-function assertNothingSensitiveLogged() {
+const FALLBACK = "me.inbox@example.com";
+const WITH_FALLBACK = { ...ENV, FALLBACK_ADDRESS: FALLBACK };
+const FAST = { timeouts: [20, 40] };  // short per-attempt timeouts for tests
+
+function assertNothingSensitiveLogged(extra = []) {
   const text = logged.join("\n").toLowerCase();
-  for (const secret of [SECRET, "ab12@leaktrap.xyz", "broker.example", "ocelot", "mailer.example"]) {
+  for (const secret of [SECRET, `bearer ${SECRET}`, "ab12@leaktrap.xyz", "broker.example", "ocelot", "mailer.example",
+    "me.inbox", "@example.com", ...extra]) {
     assert.ok(!text.includes(secret.toLowerCase()), `log contains ${secret}`);
   }
+}
+
+/** Fetch stub: each call takes the next step (a status, an Error, or "hang" until aborted). */
+function scriptedFetch(...steps) {
+  const calls = [];
+  const impl = (url, init) => {
+    const step = steps[Math.min(calls.length, steps.length - 1)];
+    calls.push({ url, init, at: Date.now() });
+    if (step === "hang") {
+      return new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));
+    }
+    if (step instanceof Error) return Promise.reject(step);
+    return Promise.resolve(new Response(null, { status: step }));
+  };
+  impl.calls = calls;
+  return impl;
+}
+
+function failingForward(error) {
+  return { async forward() { this.forwardAttempts = (this.forwardAttempts ?? 0) + 1; throw error; } };
 }
 
 test("payload contains only the agreed minimal fields", () => {
@@ -94,63 +121,177 @@ test("missing headers become null and long headers are truncated", () => {
   assert.equal(long.auth_results.length, 2000);
 });
 
-test("accepted message is posted with the secret and not forwarded", async () => {
-  const message = fakeMessage();
-  const fetchImpl = fakeFetch(201);
-  const result = await handleEmail(message, ENV, fetchImpl);
-  assert.deepEqual(result, { outcome: "ingested", status: 201 });
+// ---------- delivery: forward the original, then record metadata ----------
+
+test("valid ingestion and successful forwarding", async () => {
+  const order = [];
+  const message = fakeMessage({ async forward(address) { order.push("forward"); this.forwardedTo.push(address); } });
+  const fetchImpl = async (url, init) => { order.push("record"); fetchImpl.calls.push({ url, init }); return new Response(null, { status: 201 }); };
+  fetchImpl.calls = [];
+  const result = await handleEmail(message, WITH_FALLBACK, fetchImpl);
+  assert.deepEqual(result, { outcome: "forwarded_and_recorded", status: 201, attempts: 1 });
+  assert.deepEqual(order, ["forward", "record"]);  // delivery never waits on the backend
+  assert.deepEqual(message.forwardedTo, [FALLBACK]);
   const [{ url, init }] = fetchImpl.calls;
   assert.equal(url, ENV.INGEST_URL);
   assert.equal(init.method, "POST");
   assert.equal(init.headers.authorization, `Bearer ${SECRET}`);
   assert.equal(init.headers["content-type"], "application/json");
   assert.deepEqual(Object.keys(JSON.parse(init.body)), PAYLOAD_FIELDS);
-  assert.deepEqual(message.forwardedTo, []);
   assert.equal(message.rejected, null);
+  assert.match(logged.join(), /forwarded and recorded \(HTTP 201, attempt 1\)/);
+  assertNothingSensitiveLogged();
 });
 
-test("duplicate (HTTP 200) counts as accepted", async () => {
-  const result = await handleEmail(fakeMessage(), ENV, fakeFetch(200));
-  assert.equal(result.outcome, "ingested");
+test("duplicate ingestion (HTTP 200) counts as recorded and is not retried", async () => {
+  const message = fakeMessage();
+  const fetchImpl = scriptedFetch(200);
+  const result = await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST);
+  assert.deepEqual(result, { outcome: "forwarded_and_recorded", status: 200, attempts: 1 });
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.deepEqual(message.forwardedTo, [FALLBACK]);
 });
 
-for (const to of ["a@example.com", "a@sub.leaktrap.xyz", "a@leaktrap.xyz.evil.com", ""]) {
-  test(`other recipient domain is rejected without calling the backend: ${to || "(empty)"}`, async () => {
-    const message = fakeMessage({ to });
-    const fetchImpl = fakeFetch(201);
-    const result = await handleEmail(message, ENV, fetchImpl);
-    assert.equal(result.outcome, "rejected");
-    assert.ok(message.rejected);
-    assert.equal(fetchImpl.calls.length, 0);
-  });
-}
+test("forwarding failure is not reported as delivered; metadata is still recorded", async () => {
+  // Cloudflare's own wording, including an address, must not reach the logs.
+  const message = fakeMessage(failingForward(new Error(`destination address is invalid: ${FALLBACK} Missing domain or user`)));
+  const fetchImpl = scriptedFetch(201);
+  await assert.rejects(handleEmail(message, WITH_FALLBACK, fetchImpl, FAST), /could not forward the message/);
+  assert.equal(message.forwardAttempts, 1);  // never retried within the run
+  assert.equal(fetchImpl.calls.length, 1);
+  const text = logged.join("\n");
+  assert.match(text, /\[forward\] forwarding failed \(Error: destination address is invalid: <(address|redacted)> Missing domain or user\)/);
+  assert.match(text, /metadata recorded \(HTTP 201\)/);
+  assertNothingSensitiveLogged();
+});
 
-for (const status of [401, 413, 422, 500, 503]) {
-  test(`backend HTTP ${status} forwards to fallback`, async () => {
+test("forwarding failure and recording failure: thrown, nothing claimed", async () => {
+  const message = fakeMessage(failingForward(new Error("destination address not verified")));
+  await assert.rejects(handleEmail(message, WITH_FALLBACK, scriptedFetch(503), FAST), /could not forward/);
+  assert.match(logged.join(), /metadata not recorded \(attempt 1: backend returned HTTP 503; attempt 2: backend returned HTTP 503\)/);
+});
+
+test("backend timeout, then the retry succeeds (cold start); forwarded exactly once", async () => {
+  const message = fakeMessage();
+  const fetchImpl = scriptedFetch("hang", 201);
+  const result = await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST);
+  assert.deepEqual(result, { outcome: "forwarded_and_recorded", status: 201, attempts: 2 });
+  assert.deepEqual(message.forwardedTo, [FALLBACK]);
+  assert.equal(fetchImpl.calls[0].init.body, fetchImpl.calls[1].init.body);  // identical retry: deduplicated
+});
+
+test("backend times out on every attempt: delivered, not recorded, not thrown", async () => {
+  const message = fakeMessage();
+  const fetchImpl = scriptedFetch("hang");
+  const result = await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST);
+  assert.equal(result.outcome, "forwarded_not_recorded");
+  assert.match(result.reason, /network error \(TimeoutError: /);
+  assert.equal(result.attempts, 2);
+  assert.deepEqual(message.forwardedTo, [FALLBACK]);  // a throw here would make the sender retry: a second copy
+  assert.match(logged.join(), /\[record\] forwarded, but metadata was not recorded \(attempt 1: network error \(TimeoutError: .*; attempt 2: network error \(TimeoutError: /);
+  assertNothingSensitiveLogged();
+});
+
+const REASONS = {
+  401: "backend rejected INGEST_SECRET (HTTP 401): it does not match LEAKTRACE_INGEST_SECRET on Render",
+  422: "backend rejected the payload (HTTP 422)",
+};
+for (const [status, attempts] of [[502, 2], [503, 2], [504, 2], [401, 1], [413, 1], [422, 1], [500, 1]]) {
+  test(`backend HTTP ${status}: original still delivered, ${attempts === 2 ? "retried once" : "not retried"}`, async () => {
     const message = fakeMessage();
-    const result = await handleEmail(message, { ...ENV, FALLBACK_ADDRESS: "me@example.com" }, fakeFetch(status));
-    assert.equal(result.outcome, "forwarded_to_fallback");
-    assert.deepEqual(message.forwardedTo, ["me@example.com"]);
-    assert.match(logged.join(), new RegExp(`HTTP ${status}`));
+    const fetchImpl = scriptedFetch(status);
+    const result = await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST);
+    const reason = REASONS[status] ?? `backend returned HTTP ${status}`;
+    assert.deepEqual(result, { outcome: "forwarded_not_recorded", reason, attempts });
+    assert.equal(fetchImpl.calls.length, attempts);
+    assert.deepEqual(message.forwardedTo, [FALLBACK]);
     assertNothingSensitiveLogged();
   });
 }
 
-test("backend failure without fallback throws so it is visible", async () => {
+test("network error then success", async () => {
+  const result = await handleEmail(fakeMessage(), WITH_FALLBACK, scriptedFetch(new TypeError("fetch failed"), 201), FAST);
+  assert.deepEqual(result, { outcome: "forwarded_and_recorded", status: 201, attempts: 2 });
+});
+
+// ---------- FALLBACK_ADDRESS configuration ----------
+
+test("no FALLBACK_ADDRESS: recorded, and the missing forward is logged", async () => {
   const message = fakeMessage();
-  await assert.rejects(handleEmail(message, ENV, fakeFetch(500)), /HTTP 500/);
+  const result = await handleEmail(message, ENV, scriptedFetch(201), FAST);
+  assert.deepEqual(result, { outcome: "recorded_not_forwarded", status: 201, attempts: 1 });
   assert.deepEqual(message.forwardedTo, []);
+  assert.match(logged.join(), /not forwarded: no FALLBACK_ADDRESS configured/);
+});
+
+test("no FALLBACK_ADDRESS and recording fails: thrown so it is visible", async () => {
+  const message = fakeMessage();
+  await assert.rejects(handleEmail(message, ENV, scriptedFetch(500), FAST), /ingest failed \(backend returned HTTP 500\)/);
   assertNothingSensitiveLogged();
 });
 
-test("network error goes to fallback", async () => {
-  const message = fakeMessage();
-  const result = await handleEmail(
-    message, { ...ENV, FALLBACK_ADDRESS: "me@example.com" }, fakeFetch(new TypeError("fetch failed")),
-  );
-  assert.equal(result.outcome, "forwarded_to_fallback");
-  assert.match(result.reason, /network error: TypeError/);
+for (const [name, value, problem] of [
+  ["no domain", "me.inbox@example", /domain after @ is missing or invalid/],
+  ["no user", "@example.com", /user part before @ is missing/],
+  ["no @", "me.inbox.example.com", /exactly one @ \(found 0\)/],
+  ["two addresses", "me.inbox@example.com, other@example.com", /contains 2 email addresses/],
+  ["only quotes", '""', /empty after removing quotes/],
+  ["space inside", "me inbox@example.com", /address plus other text/],
+  ["text without @", "me inbox example", /spaces, commas or semicolons/],
+]) {
+  test(`malformed FALLBACK_ADDRESS (${name}): never passed to forward, recorded, thrown, value not logged`, async () => {
+    const message = fakeMessage();
+    const fetchImpl = scriptedFetch(201);
+    await assert.rejects(handleEmail(message, { ...ENV, FALLBACK_ADDRESS: value }, fetchImpl, FAST),
+      /FALLBACK_ADDRESS is invalid/);
+    assert.deepEqual(message.forwardedTo, []);
+    assert.equal(fetchImpl.calls.length, 1);
+    assert.match(logged.join(), problem);
+    assert.match(logged.join(), /metadata recorded \(HTTP 201\)/);
+    assertNothingSensitiveLogged([value, "me.inbox", "me inbox"]);
+  });
+}
+
+for (const [name, value, removed] of [
+  ["quotes", `"${FALLBACK}"`, "surrounding quotes"],
+  ["display name", `Me <${FALLBACK}>`, "display name or angle brackets"],
+  ["whitespace and newline", `  ${FALLBACK}\n`, "surrounding whitespace"],
+  ["mailto", `mailto:${FALLBACK}`, "mailto: prefix"],
+  ["zero-width space", `${FALLBACK}​`, "invisible characters"],
+  ["uppercase domain", "me.inbox@EXAMPLE.COM", null],
+]) {
+  test(`repairable FALLBACK_ADDRESS (${name}) is normalized before forwarding`, async () => {
+    const message = fakeMessage();
+    const result = await handleEmail(message, { ...ENV, FALLBACK_ADDRESS: value }, scriptedFetch(201), FAST);
+    assert.equal(result.outcome, "forwarded_and_recorded");
+    assert.deepEqual(message.forwardedTo, [FALLBACK]);
+    if (removed) assert.match(logged.join(), new RegExp(`normalized \\(removed ${removed}`));
+    assertNothingSensitiveLogged();
+  });
+}
+
+test("parseFallbackAddress never returns the value in its problem or repairs", () => {
+  for (const value of ["x y@z.com", "a@b", "<>", "Name <a@b.example>", "a@@b.com", "a@b.c0m"]) {
+    const { problem, repaired } = parseFallbackAddress(value);
+    assert.ok(!`${problem} ${repaired}`.includes(value.trim()), value);
+  }
+  assert.deepEqual(parseFallbackAddress(undefined), { address: null, problem: null, repaired: [] });
+  assert.deepEqual(parseFallbackAddress("  "), { address: null, problem: null, repaired: [] });
 });
+
+// ---------- recipient domain and ingest configuration ----------
+
+for (const to of ["a@example.com", "a@sub.leaktrap.xyz", "a@leaktrap.xyz.evil.com", ""]) {
+  test(`other recipient domain is rejected without forwarding or calling the backend: ${to || "(empty)"}`, async () => {
+    const message = fakeMessage({ to });
+    const fetchImpl = scriptedFetch(201);
+    const result = await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST);
+    assert.equal(result.outcome, "rejected");
+    assert.ok(message.rejected);
+    assert.equal(fetchImpl.calls.length, 0);
+    assert.deepEqual(message.forwardedTo, []);
+  });
+}
 
 for (const [name, env] of [
   ["missing secret", { ...ENV, INGEST_SECRET: "" }],
@@ -159,20 +300,158 @@ for (const [name, env] of [
   ["plain http URL", { ...ENV, INGEST_URL: "http://api.example.test/ingest/email" }],
   ["localhost http URL", { ...ENV, INGEST_URL: "http://localhost:8000/ingest/email" }],
 ]) {
-  test(`misconfiguration (${name}) never calls the backend and is not silent`, async () => {
-    const fetchImpl = fakeFetch(201);
-    await assert.rejects(handleEmail(fakeMessage(), env, fetchImpl), /misconfigured/);
+  test(`ingest misconfiguration (${name}) never calls the backend and is not silent`, async () => {
+    const fetchImpl = scriptedFetch(201);
+    await assert.rejects(handleEmail(fakeMessage(), env, fetchImpl, FAST), /misconfigured/);
+    assert.equal(fetchImpl.calls.length, 0);
+    const message = fakeMessage();
+    const delivered = await handleEmail(message, { ...env, FALLBACK_ADDRESS: FALLBACK }, fetchImpl, FAST);
+    assert.equal(delivered.outcome, "forwarded_not_recorded");
+    assert.match(delivered.reason, /misconfigured/);
+    assert.deepEqual(message.forwardedTo, [FALLBACK]);
     assert.equal(fetchImpl.calls.length, 0);
     assertNothingSensitiveLogged();
   });
 }
 
-test("failing fallback forward is not swallowed", async () => {
-  const message = fakeMessage({ async forward() { throw new Error("destination not verified"); } });
-  await assert.rejects(
-    handleEmail(message, { ...ENV, FALLBACK_ADDRESS: "me@example.com" }, fakeFetch(500)),
-    /destination not verified/,
-  );
+test("the subject and message headers never reach the logs on any path", async () => {
+  await handleEmail(fakeMessage(), WITH_FALLBACK, scriptedFetch(201), FAST);
+  await handleEmail(fakeMessage(), WITH_FALLBACK, scriptedFetch("hang"), FAST);
+  await handleEmail(fakeMessage(failingForward(new Error("boom"))), WITH_FALLBACK, scriptedFetch(201), FAST).catch(() => {});
+  await handleEmail(fakeMessage(), { ...ENV, FALLBACK_ADDRESS: "bad" }, scriptedFetch(201), FAST).catch(() => {});
+  assertNothingSensitiveLogged(["hi ocelot", "abc@mailer", "authorization", "deals"]);
+});
+
+// ---------- regressions for the demonstrated production failures ----------
+
+// The token format used for INGEST_SECRET: python secrets.token_urlsafe(48).
+const TOKEN = "Zq3vN8x_L2mP-7rT9wYb4cKd6fHj1sAe5uGi0oQnXlVyRzWtBpCaDeFgHkJmNo2";
+
+/** Fetch stub that behaves like the Workers runtime for header values. */
+function runtimeLikeFetch(status = 201) {
+  const impl = scriptedFetch(status);
+  return (url, init) => {
+    if (/[\r\n]/.test(String(init.headers.authorization).trim())) {
+      return Promise.reject(new TypeError("Invalid header value."));
+    }
+    return impl(url, init);
+  };
+}
+
+test("REGRESSION: generated token entered as FALLBACK_ADDRESS (found 0 @) is named, never forwarded", async () => {
+  const message = fakeMessage();
+  const fetchImpl = scriptedFetch(201);
+  await assert.rejects(handleEmail(message, { ...ENV, FALLBACK_ADDRESS: TOKEN }, fetchImpl, FAST), /looks like a generated token/);
+  assert.deepEqual(message.forwardedTo, []);
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.match(logged.join(), /\[config\] FALLBACK_ADDRESS is invalid: it looks like a generated token/);
+  assertNothingSensitiveLogged([TOKEN]);
+});
+
+test("REGRESSION: FALLBACK_ADDRESS holding the same value as INGEST_SECRET is reported as such", async () => {
+  const message = fakeMessage();
+  await assert.rejects(handleEmail(message, { ...ENV, FALLBACK_ADDRESS: ` ${SECRET}\n` }, scriptedFetch(201), FAST),
+    /same value as INGEST_SECRET/);
+  assert.deepEqual(message.forwardedTo, []);
+  assertNothingSensitiveLogged();
+});
+
+for (const [name, value, problem] of [
+  ["a copied dashboard row", "me.inbox@example.com\tVerified", /address plus other text/],
+  ["two dashboard rows", "me.inbox@example.com Verified\nother@example.com Verified", /contains 2 email addresses/],
+  ["two addresses on two lines", "me.inbox@example.com\nother@example.com", /contains 2 email addresses/],
+]) {
+  test(`REGRESSION: clipboard with ${name} is refused as FALLBACK_ADDRESS`, async () => {
+    const message = fakeMessage();
+    await assert.rejects(handleEmail(message, { ...ENV, FALLBACK_ADDRESS: value }, scriptedFetch(201), FAST), /FALLBACK_ADDRESS is invalid/);
+    assert.deepEqual(message.forwardedTo, []);
+    assert.match(logged.join(), problem);
+    assertNothingSensitiveLogged(["other@example.com", "Verified\n"]);
+  });
+}
+
+test("REGRESSION: INGEST_SECRET with a line break caused 'network error: TypeError'; now a named config error", async () => {
+  const multiLine = "me.inbox Verified 2026\nother Verified 2026 more text";
+  // What the deployed Worker did: the runtime rejects the header with a TypeError.
+  await assert.rejects(runtimeLikeFetch()("https://x.example/", { headers: { authorization: `Bearer ${multiLine}` } }),
+    { name: "TypeError", message: "Invalid header value." });
+  // Now: refused before fetch, the original is still forwarded, and the stage is named.
+  const message = fakeMessage();
+  const fetchImpl = scriptedFetch(201);
+  const result = await handleEmail(message, { ...WITH_FALLBACK, INGEST_SECRET: multiLine }, fetchImpl, FAST);
+  assert.equal(result.outcome, "forwarded_not_recorded");
+  assert.match(result.reason, /misconfigured: INGEST_SECRET contains a line break/);
+  assert.equal(fetchImpl.calls.length, 0);
+  assert.deepEqual(message.forwardedTo, [FALLBACK]);
+  assert.match(logged.join(), /\[config\] INGEST_SECRET contains a line break/);
+  assertNothingSensitiveLogged(["Verified 2026"]);
+});
+
+test("a TypeError from fetch is logged with its message, not just its name", async () => {
+  const fetchImpl = async () => { throw new TypeError("Invalid header value."); };
+  const result = await handleEmail(fakeMessage(), WITH_FALLBACK, fetchImpl, FAST);
+  assert.equal(result.reason, "network error (TypeError: Invalid header value.)");
+  assert.match(logged.join(), /attempt 1: network error \(TypeError: Invalid header value\.\); attempt 2:/);
+});
+
+for (const [name, value, problem] of [
+  ["a line break", `${TOKEN}\n${TOKEN}`, /line break/],
+  ["an email address", "me.inbox@example.com and padding text 1234567890", /contains @/],
+  ["spaces", "abcdefghij klmnopqrst uvwxyz 0123456789", /spaces or tabs/],
+  ["non-ASCII", `${TOKEN}…`, /non-ASCII/],
+  ["too few characters", "short-token", /shorter than 32/],
+  ["nothing", "  ", /not set/],
+]) {
+  test(`INGEST_SECRET with ${name} is refused before any request`, () => {
+    assert.match(ingestSecretProblem(value), problem);
+    assert.ok(!ingestSecretProblem(value).includes(value.trim()) || value.trim() === "");
+  });
+}
+
+test("a generated token is a valid INGEST_SECRET; surrounding whitespace is ignored as fetch ignores it", async () => {
+  assert.equal(ingestSecretProblem(TOKEN), null);
+  assert.equal(ingestSecretProblem(`${TOKEN}\n`), null);
+  const fetchImpl = scriptedFetch(201);
+  await handleEmail(fakeMessage(), { ...WITH_FALLBACK, INGEST_SECRET: `${TOKEN}\n` }, fetchImpl, FAST);
+  assert.equal(fetchImpl.calls[0].init.headers.authorization, `Bearer ${TOKEN}`);
+});
+
+test("valid single fallback address is forwarded to exactly", async () => {
+  assert.deepEqual(parseFallbackAddress("first.last+tag@example.com"),
+    { address: "first.last+tag@example.com", problem: null, repaired: [] });
+});
+
+test("authentication failure after secret rotation: named, not retried, original delivered", async () => {
+  const message = fakeMessage();
+  const fetchImpl = scriptedFetch(401);
+  const result = await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST);
+  assert.equal(result.outcome, "forwarded_not_recorded");
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.deepEqual(message.forwardedTo, [FALLBACK]);
+  assert.match(logged.join(), /\[record\].*does not match LEAKTRACE_INGEST_SECRET on Render/);
+  assertNothingSensitiveLogged();
+});
+
+test("duplicate Message-ID: a retried delivery sends the identical payload and HTTP 200 counts as recorded", async () => {
+  const first = scriptedFetch(201);
+  const second = scriptedFetch(200);
+  await handleEmail(fakeMessage(), WITH_FALLBACK, first, FAST);
+  const again = await handleEmail(fakeMessage(), WITH_FALLBACK, second, FAST);
+  assert.equal(again.outcome, "forwarded_and_recorded");
+  const a = JSON.parse(first.calls[0].init.body);
+  const b = JSON.parse(second.calls[0].init.body);
+  assert.equal(a.message_id, b.message_id);
+  assert.equal(a.recipient, b.recipient);
+});
+
+test("redaction: secret values never reach the logs, even inside runtime error messages", async () => {
+  const fetchImpl = async () => { throw new Error(`upstream said Bearer ${SECRET} was bad for ${FALLBACK}`); };
+  const message = fakeMessage(failingForward(new Error(`cannot deliver to ${FALLBACK} using ${SECRET}`)));
+  await assert.rejects(handleEmail(message, WITH_FALLBACK, fetchImpl, FAST), (error) => {
+    assert.ok(!error.message.includes(SECRET) && !error.message.includes(FALLBACK));
+    return true;
+  });
+  assertNothingSensitiveLogged();
 });
 
 test("default export exposes an email handler", () => {

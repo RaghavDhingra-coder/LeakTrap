@@ -1,19 +1,33 @@
 // LeakTrace email Worker.
 //
-// For each message routed to it, the Worker checks the recipient domain and
-// POSTs a minimal JSON payload (no body, no attachments) to the backend. It
-// never reads message.raw. Cloudflare runs the Worker once per envelope
+// For each message routed to it, the Worker checks the recipient domain, then:
+//   1. forwards the original message, unchanged, to FALLBACK_ADDRESS (a Worker
+//      secret holding one verified Email Routing destination), and
+//   2. POSTs a minimal JSON payload (no body, no attachments) to the backend.
+// It never reads message.raw. Cloudflare runs the Worker once per envelope
 // recipient, so message.to is the one alias this copy was delivered to; the
-// backend attributes the message by that address only, never by To/Cc headers. If the backend does not accept the message, the
-// original is forwarded to FALLBACK_ADDRESS when configured; otherwise the
-// Worker throws so the failure is visible in Cloudflare's logs instead of the
-// message being silently dropped.
+// backend attributes the message by that address only, never by To/Cc headers.
+//
+// Forwarding comes first so delivery never waits on the backend (which may be
+// waking from sleep) and so the message is forwarded at most once: after a
+// successful forward the Worker never throws, because a thrown error makes the
+// sender retry and the retry would forward a second copy. Recording retries
+// within this run instead; the backend deduplicates by Message-ID, so a retry
+// never stores a message twice. When the message can be neither forwarded nor
+// recorded, the Worker throws so the failure is visible and the sender is told,
+// rather than the message being silently dropped.
+//
+// Logs never contain addresses, subjects, secrets or message content.
 
 const MAX_HEADER_LENGTH = 998;
 // Must match MAX_AUTH_RESULTS_LENGTH in backend/schemas/mail_ingest.py.
 const MAX_AUTH_RESULTS_LENGTH = 2000;
-const REQUEST_TIMEOUT_MS = 10_000;
 const MIN_SECRET_LENGTH = 32;
+// One timeout per attempt. The first request also wakes a sleeping backend
+// (Render's free plan sleeps when idle), so the retry waits longer.
+export const INGEST_TIMEOUTS_MS = [10_000, 30_000];
+// Worth retrying: gateway errors and unavailability. Other statuses are final.
+const RETRY_STATUSES = new Set([502, 503, 504]);
 
 // Must match MailIngestRequest in backend/schemas/mail_ingest.py.
 export const PAYLOAD_FIELDS = [
@@ -39,8 +53,27 @@ export function buildPayload(message, receivedAt = new Date()) {
   };
 }
 
+/**
+ * Why INGEST_SECRET cannot be sent as a Bearer token, or null. Never contains
+ * the value. Surrounding whitespace is ignored (fetch strips it from header
+ * values too). A line break inside the value makes the runtime's fetch throw
+ * "TypeError: Invalid header value."; the other checks catch values that are
+ * clearly not the generated token, such as copied addresses.
+ */
+export function ingestSecretProblem(raw) {
+  if (raw === undefined || raw === null || String(raw).trim() === "") return "INGEST_SECRET is not set";
+  const value = String(raw).trim();
+  if (/[\r\n]/.test(value)) return "INGEST_SECRET contains a line break (it looks like copied multi-line text, not the generated token)";
+  if (value.includes("@")) return "INGEST_SECRET contains @ (it looks like an email address, not the generated token)";
+  if (/[ \t]/.test(value)) return "INGEST_SECRET contains spaces or tabs";
+  if (/[^\x21-\x7E]/.test(value)) return "INGEST_SECRET contains non-ASCII or control characters";
+  if (value.length < MIN_SECRET_LENGTH) return `INGEST_SECRET is shorter than ${MIN_SECRET_LENGTH} characters`;
+  return null;
+}
+
 function configProblem(env) {
-  if (!env.INGEST_SECRET || env.INGEST_SECRET.length < MIN_SECRET_LENGTH) return "INGEST_SECRET missing or too short";
+  const secretProblem = ingestSecretProblem(env.INGEST_SECRET);
+  if (secretProblem) return secretProblem;
   let url;
   try {
     url = new URL(env.INGEST_URL);
@@ -51,18 +84,151 @@ function configProblem(env) {
   return null;
 }
 
-async function deliveryFailed(message, env, reason) {
-  // Log the reason only: never addresses, subjects or the secret.
-  if (env.FALLBACK_ADDRESS) {
-    console.error(`LeakTrace ingest failed (${reason}); forwarding to fallback address`);
-    await message.forward(env.FALLBACK_ADDRESS);
-    return { outcome: "forwarded_to_fallback", reason };
+const INVISIBLE = /[\u200B-\u200D\u2060\uFEFF]/;
+const LOCAL_PART = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}$/;
+const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+
+/**
+ * Normalize the FALLBACK_ADDRESS secret to one bare address.
+ *
+ * Returns { address, problem, repaired }: address is null when the secret is
+ * unset or invalid; problem says why it is invalid; repaired lists what was
+ * removed from an otherwise valid value. Neither ever contains the value, so
+ * both are safe to log.
+ */
+export function parseFallbackAddress(raw) {
+  const repaired = [];
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return { address: null, problem: null, repaired };
   }
-  console.error(`LeakTrace ingest failed (${reason}); no FALLBACK_ADDRESS configured`);
-  throw new Error(`LeakTrace ingest failed (${reason})`);
+  let value = String(raw);
+  if (INVISIBLE.test(value)) {
+    value = value.replace(new RegExp(INVISIBLE.source, "g"), "");
+    repaired.push("invisible characters");
+  }
+  value = value.replace(/\u00A0/g, " ");
+  if (value !== value.trim()) {
+    value = value.trim();
+    repaired.push("surrounding whitespace");
+  }
+  for (const [open, close] of [['"', '"'], ["'", "'"]]) {
+    if (value.length >= 2 && value.startsWith(open) && value.endsWith(close)) {
+      value = value.slice(1, -1).trim();
+      repaired.push("surrounding quotes");
+    }
+  }
+  if (/^mailto:/i.test(value)) {
+    value = value.slice(7).trim();
+    repaired.push("mailto: prefix");
+  }
+  const bracketed = /^[^<>]*<([^<>]*)>$/.exec(value);
+  if (bracketed) {
+    value = bracketed[1].trim();
+    repaired.push("display name or angle brackets");
+  }
+  if (!value) return { address: null, problem: "it is empty after removing quotes or brackets", repaired };
+  const addresses = value.match(/[^\s,;<>"']+@[^\s,;<>"']+/g) ?? [];
+  if (addresses.length > 1) {
+    return { address: null, problem: `it contains ${addresses.length} email addresses; store exactly one`, repaired };
+  }
+  if (addresses.length === 1 && addresses[0] !== value) {
+    return { address: null, problem: "it contains an address plus other text (for example a copied dashboard row); store only the address", repaired };
+  }
+  if (!value.includes("@") && /^[A-Za-z0-9_-]{32,}$/.test(value)) {
+    return { address: null, problem: "it looks like a generated token, not an email address (was the INGEST_SECRET value entered here?)", repaired };
+  }
+  if (/[\s,;]/.test(value)) {
+    return { address: null, problem: "it contains spaces, commas or semicolons; use exactly one plain address", repaired };
+  }
+  const at = value.split("@").length - 1;
+  if (at !== 1) return { address: null, problem: `it must contain exactly one @ (found ${at})`, repaired };
+  const [local, domain] = value.split("@");
+  if (!local) return { address: null, problem: "the user part before @ is missing", repaired };
+  if (!LOCAL_PART.test(local)) return { address: null, problem: "the user part before @ has invalid characters", repaired };
+  if (!DOMAIN.test(domain.toLowerCase())) {
+    return { address: null, problem: "the domain after @ is missing or invalid", repaired };
+  }
+  return { address: `${local}@${domain.toLowerCase()}`, problem: null, repaired };
 }
 
-export async function handleEmail(message, env, fetchImpl = fetch) {
+/**
+ * Text safe to log: exact secret values, email addresses and long token-like
+ * strings are replaced, and the length is capped.
+ */
+function redact(text, env = {}) {
+  let out = String(text);
+  for (const secret of [env.INGEST_SECRET, env.FALLBACK_ADDRESS]) {
+    for (const form of new Set([secret, typeof secret === "string" ? secret.trim() : null])) {
+      if (typeof form === "string" && form.length >= 4) out = out.split(form).join("<redacted>");
+    }
+  }
+  return out
+    .replace(/[^\s<>"'@]+@[^\s<>"'@]+/g, "<address>")
+    .replace(/[A-Za-z0-9_-]{24,}/g, "<redacted>")
+    .slice(0, 300);
+}
+
+function errorText(error, env) {
+  return redact(`${error?.name ?? "Error"}: ${error?.message ?? ""}`, env);
+}
+
+/** One log line per event, labelled with the failing stage. */
+function log(level, stage, text, env) {
+  console[level === "error" ? "error" : "log"](`LeakTrace [${stage}] ${redact(text, env)}`);
+}
+
+async function forwardOriginal(message, address, env) {
+  try {
+    await message.forward(address);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: errorText(error, env) };
+  }
+}
+
+function statusReason(status) {
+  if (status === 401) {
+    return "backend rejected INGEST_SECRET (HTTP 401): it does not match LEAKTRACE_INGEST_SECRET on Render";
+  }
+  if (status === 422) return "backend rejected the payload (HTTP 422)";
+  return `backend returned HTTP ${status}`;
+}
+
+/**
+ * Send the message's metadata to the backend. Never throws.
+ * Returns { ok, status, attempts, history } or { ok: false, reason, attempts, history };
+ * history lists what happened on each attempt, for the log.
+ */
+async function recordMetadata(message, env, fetchImpl, timeouts) {
+  const problem = configProblem(env);
+  if (problem) return { ok: false, reason: `misconfigured: ${problem}`, attempts: 0, history: [] };
+  // The same body on every attempt, so a retry is an exact duplicate.
+  const body = JSON.stringify(buildPayload(message));
+  const history = [];
+  for (const timeout of timeouts) {
+    try {
+      const response = await fetchImpl(env.INGEST_URL, {
+        method: "POST",
+        headers: { "authorization": `Bearer ${String(env.INGEST_SECRET).trim()}`, "content-type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(timeout),
+      });
+      // 201 accepted, 200 duplicate or reprocessed: the backend has it.
+      if (response.ok) return { ok: true, status: response.status, attempts: history.length + 1, history };
+      history.push(statusReason(response.status));
+      if (!RETRY_STATUSES.has(response.status)) break;
+    } catch (error) {
+      history.push(`network error (${errorText(error, env)})`);
+    }
+  }
+  return { ok: false, reason: history.at(-1), attempts: history.length, history };
+}
+
+function attemptsText(recorded) {
+  return recorded.history.map((h, i) => `attempt ${i + 1}: ${h}`).join("; ") || recorded.reason;
+}
+
+export async function handleEmail(message, env, fetchImpl = fetch, { timeouts = INGEST_TIMEOUTS_MS } = {}) {
   const domain = String(env.ALIAS_DOMAIN ?? "").trim().toLowerCase();
   const recipient = String(message.to ?? "").trim().toLowerCase();
   if (!domain || !recipient.endsWith(`@${domain}`)) {
@@ -70,26 +236,54 @@ export async function handleEmail(message, env, fetchImpl = fetch) {
     return { outcome: "rejected" };
   }
 
-  const problem = configProblem(env);
-  if (problem) return deliveryFailed(message, env, `misconfigured: ${problem}`);
-
-  let response;
-  try {
-    response = await fetchImpl(env.INGEST_URL, {
-      method: "POST",
-      headers: {
-        "authorization": `Bearer ${env.INGEST_SECRET}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(buildPayload(message)),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-  } catch (error) {
-    return deliveryFailed(message, env, `network error: ${error?.name ?? "Error"}`);
+  const fallback = parseFallbackAddress(env.FALLBACK_ADDRESS);
+  if (env.FALLBACK_ADDRESS && env.INGEST_SECRET
+      && String(env.FALLBACK_ADDRESS).trim() === String(env.INGEST_SECRET).trim()) {
+    fallback.address = null;
+    fallback.problem = "it holds the same value as INGEST_SECRET";
   }
-  // 201 accepted, 200 duplicate (already stored): both mean the backend has it.
-  if (response.ok) return { outcome: "ingested", status: response.status };
-  return deliveryFailed(message, env, `backend returned HTTP ${response.status}`);
+  if (fallback.problem) {
+    log("error", "config", `FALLBACK_ADDRESS is invalid: ${fallback.problem}`, env);
+  } else if (fallback.repaired.length) {
+    log("error", "config", `FALLBACK_ADDRESS was normalized (removed ${fallback.repaired.join(", ")}); `
+      + "set the secret to the plain address", env);
+  }
+  const ingestProblem = configProblem(env);
+  if (ingestProblem) log("error", "config", `${ingestProblem}; metadata cannot be recorded`, env);
+
+  if (fallback.address) {
+    const forwarded = await forwardOriginal(message, fallback.address, env);
+    if (!forwarded.ok) {
+      // Not delivered. Still record it (a retry by the sender is deduplicated),
+      // then fail so the sender is told instead of the message vanishing.
+      const recorded = await recordMetadata(message, env, fetchImpl, timeouts);
+      log("error", "forward", `forwarding failed (${forwarded.reason}); metadata `
+        + `${recorded.ok ? `recorded (HTTP ${recorded.status})` : `not recorded (${attemptsText(recorded)})`}`, env);
+      throw new Error(redact(`LeakTrace could not forward the message (${forwarded.reason})`, env));
+    }
+    const recorded = await recordMetadata(message, env, fetchImpl, timeouts);
+    if (recorded.ok) {
+      log("info", "done", `forwarded and recorded (HTTP ${recorded.status}, attempt ${recorded.attempts})`, env);
+      return { outcome: "forwarded_and_recorded", status: recorded.status, attempts: recorded.attempts };
+    }
+    // Delivered but not recorded. Do not throw: that would forward a second copy.
+    log("error", "record", `forwarded, but metadata was not recorded (${attemptsText(recorded)})`, env);
+    return { outcome: "forwarded_not_recorded", reason: recorded.reason, attempts: recorded.attempts };
+  }
+
+  // No usable forwarding address: the backend record is the only copy kept.
+  const recorded = await recordMetadata(message, env, fetchImpl, timeouts);
+  const recordedText = recorded.ok ? `recorded (HTTP ${recorded.status})` : `not recorded (${attemptsText(recorded)})`;
+  if (fallback.problem) {
+    log("error", "forward", `message not forwarded because FALLBACK_ADDRESS is invalid; metadata ${recordedText}`, env);
+    throw new Error(`LeakTrace could not forward the message (FALLBACK_ADDRESS is invalid: ${fallback.problem})`);
+  }
+  if (!recorded.ok) {
+    log("error", "record", `ingest failed (${attemptsText(recorded)}); no FALLBACK_ADDRESS configured`, env);
+    throw new Error(redact(`LeakTrace ingest failed (${recorded.reason})`, env));
+  }
+  log("error", "forward", `recorded (HTTP ${recorded.status}) but not forwarded: no FALLBACK_ADDRESS configured`, env);
+  return { outcome: "recorded_not_forwarded", status: recorded.status, attempts: recorded.attempts };
 }
 
 export default {

@@ -2,6 +2,7 @@
 // All data is rendered with textContent / DOM nodes, never as HTML.
 // Signed-in state lives in an HttpOnly session cookie; every state-changing
 // request also sends the CSRF token returned by /auth/me.
+// Nothing on these pages is sample data: every number comes from the API.
 "use strict";
 
 const API = "/dashboard/api";
@@ -18,11 +19,20 @@ const REASON_LABELS = {
   unowned_alias: "Sent to an alias that is not linked to an account.",
   ambiguous_alias: "The recipient matched more than one alias, so it was not linked.",
 };
+const PAGE_TITLES = {
+  overview: "Overview", websites: "Websites & aliases", inbox: "Inbox", sms: "SMS analyzer", receipts: "Consent receipts",
+  activity: "Leak activity", check: "Match check", settings: "Settings",
+};
 const POLL_INTERVAL_MS = 30_000;
 const MAX_POLL_INTERVAL_MS = 5 * 60_000;
 const MAX_NOTIFICATIONS = 5;
+const MAX_TOASTS = 3;
+const CHART_DAYS = 14;
+const CHART_SAMPLE = 100;  // the API's largest page
+const THEME_KEY = "leaktrace.theme";
 const state = {
-  me: null, offsets: { websites: 0, receipts: 0, emails: 0, investigations: 0, inbox: 0 },
+  me: null, offsets: { websites: 0, receipts: 0, emails: 0, investigations: 0, inbox: 0, sms: 0 },
+  sms: { exclude: [], additions: [], analysis: null, saved: null },
   emailStatus: "", websiteQuery: "", websiteFilter: "all", pairCode: null,
   inboxFilter: "all", openEmailId: null, latestEmailId: null, pollTimer: null, pollDelay: POLL_INTERVAL_MS,
 };
@@ -43,15 +53,29 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+/** An inline icon from the sprite in index.html. Decorative: hidden from screen readers. */
+function icon(name, extraClass = "") {
+  const svg = document.getElementById("icon-template").content.firstElementChild.cloneNode(true);
+  svg.firstElementChild.setAttribute("href", `#i-${name}`);
+  if (extraClass) svg.setAttribute("class", `icon ${extraClass}`);
+  return svg;
+}
+
 const timeFormat = new Intl.DateTimeFormat("en-GB", {
   year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
   timeZone: "UTC", hour12: false,
 });
+const dayFormat = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+const weekdayFormat = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
 
 function formatTime(iso) {
   if (!iso) return "—";
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? "—" : `${timeFormat.format(date)} UTC`;
+}
+
+function formatNumber(n) {
+  return typeof n === "number" ? n.toLocaleString("en-GB") : "—";
 }
 
 function statusBadge(status) {
@@ -63,7 +87,14 @@ function setStatus(section, message, isError = false) {
   const box = section.querySelector("[data-status]");
   box.textContent = message;
   box.classList.toggle("error", isError);
+  box.classList.remove("sr-only");
   box.setAttribute("role", isError ? "alert" : "status");
+}
+
+/** A status message for screen readers only, when the page shows it visually some other way. */
+function setQuietStatus(section, message) {
+  setStatus(section, message);
+  if (message) section.querySelector("[data-status]").classList.add("sr-only");
 }
 
 function say(id, message, kind = "") {
@@ -104,6 +135,46 @@ function unreadLabel(count) {
   return count === 1 ? "1 unread email" : `${count} unread emails`;
 }
 
+// ---------- chart data (pure: no DOM) ----------
+
+/**
+ * Count messages per UTC day for the `days` days ending today.
+ *
+ * `times` are received_at values of the newest messages, newest first. When
+ * `complete` is false the list was cut off at the API's page size, so days
+ * older than the oldest loaded message are marked covered: false instead of
+ * being reported as zero.
+ */
+function emailsPerDay(times, { now = new Date(), days = CHART_DAYS, complete = true } = {}) {
+  const dayKey = (d) => d.toISOString().slice(0, 10);
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const counts = new Map();
+  let oldest = null;
+  for (const t of times) {
+    const date = new Date(t);
+    if (Number.isNaN(date.getTime())) continue;
+    counts.set(dayKey(date), (counts.get(dayKey(date)) ?? 0) + 1);
+    if (oldest === null || date < oldest) oldest = date;
+  }
+  const oldestDay = oldest === null ? null
+    : Date.UTC(oldest.getUTCFullYear(), oldest.getUTCMonth(), oldest.getUTCDate());
+  const result = [];
+  for (let i = days - 1; i >= 0; i -= 1) {
+    const start = today - i * 86_400_000;
+    const key = dayKey(new Date(start));
+    // The oldest loaded day may itself be partial when the list was cut off.
+    const covered = complete || (oldestDay !== null && start > oldestDay);
+    result.push({ date: key, count: covered ? (counts.get(key) ?? 0) : null, covered });
+  }
+  return result;
+}
+
+function percentText(part, total) {
+  if (!total) return "0%";
+  const p = (part / total) * 100;
+  return p > 0 && p < 1 ? "<1%" : `${Math.round(p)}%`;
+}
+
 // Form labels for request fields, used in validation messages.
 const FIELD_LABELS = {
   signup_id: "Signup ID", action: "What you did", source_url: "Privacy notice URL",
@@ -112,7 +183,14 @@ const FIELD_LABELS = {
   recipient: "Recipient address", sender: "Sender address", subject: "Subject", nickname: "Nickname",
   surname_variant: "Surname", user_id: "User ID", limit: "Page size", offset: "Page position", status: "Status filter",
   email: "Email", password: "Password", current_password: "Current password", new_password: "New password",
-  confirm: "Confirmation", code: "Code", filter: "Show",
+  confirm: "Confirmation", code: "Code", filter: "Show", site_name: "Website name", site_domain: "Website domain",
+  real_name_required: "Real name required", received_at: "Received", candidate_key: "Source",
+};
+// Labels for single-word field names. Used only to name the field an error is
+// about, never to rewrite words inside messages ("Notice text" stays as is).
+const PREFIX_LABELS = {
+  ...FIELD_LABELS, text: "Message text", label: "Where you received it", exclude: "Corrections",
+  additions: "Added details", value: "Value", type: "Type",
 };
 const MAX_SHOWN_ERRORS = 3;
 
@@ -143,7 +221,7 @@ function validationErrors(detail) {
     const keys = Object.keys(FIELD_LABELS).filter((k) => !field || k.includes("_"));
     message = humanizeFields(message, keys);
     if (!field) return { field, text: message.charAt(0).toUpperCase() + message.slice(1) };
-    return { field, text: `${FIELD_LABELS[field] ?? field}: ${message}` };
+    return { field, text: `${PREFIX_LABELS[field] ?? field}: ${message}` };
   });
 }
 
@@ -204,16 +282,22 @@ async function api(url, { method = "GET", body } = {}) {
 
 const getJSON = (url) => api(url);
 
+// ---------- shared components ----------
+
 function renderPager(name, page, reload) {
   const pager = document.querySelector(`[data-pager="${name}"]`);
+  if (page.total <= page.limit && page.offset === 0) {
+    pager.replaceChildren();
+    return;
+  }
   const from = page.total === 0 ? 0 : page.offset + 1;
   const to = page.offset + page.items.length;
   pager.replaceChildren(
-    el("button", { type: "button", "aria-label": "Previous page",
-      onclick: () => { state.offsets[name] = Math.max(0, page.offset - page.limit); reload(); } }, "Previous"),
-    el("span", { "aria-live": "polite" }, `${from}–${to} of ${page.total}`),
-    el("button", { type: "button", "aria-label": "Next page",
-      onclick: () => { state.offsets[name] = page.offset + page.limit; reload(); } }, "Next"),
+    el("button", { type: "button", class: "btn btn-secondary btn-sm", "aria-label": "Previous page",
+      onclick: () => { state.offsets[name] = Math.max(0, page.offset - page.limit); reload(); } }, icon("chev-left"), "Previous"),
+    el("span", { "aria-live": "polite" }, `${from}–${to} of ${formatNumber(page.total)}`),
+    el("button", { type: "button", class: "btn btn-secondary btn-sm", "aria-label": "Next page",
+      onclick: () => { state.offsets[name] = page.offset + page.limit; reload(); } }, "Next", icon("chev-right")),
   );
   pager.children[0].disabled = page.offset === 0;
   pager.children[2].disabled = to >= page.total;
@@ -223,17 +307,132 @@ function list(items) {
   return el("ul", {}, ...items.map((item) => el("li", {}, item)));
 }
 
-function copyButton(label, value) {
-  const button = el("button", { type: "button", class: "secondary" }, `Copy ${label}`);
-  button.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      button.textContent = `Copied ${label}`;
-    } catch {
-      button.textContent = `Copy failed — select the ${label} and copy it manually`;
+/** A short confirmation in the corner; announced by screen readers. */
+function toast(message, kind = "ok") {
+  const region = document.getElementById("toasts");
+  const node = el("div", { class: `toast toast-${kind}` }, icon(kind === "error" ? "alert" : "check"), el("p", {}, message));
+  region.append(node);
+  while (region.children.length > MAX_TOASTS) region.firstElementChild.remove();
+  setTimeout(() => node.remove(), kind === "error" ? 7000 : 4000);
+}
+
+async function copyText(value, label, button = null) {
+  try {
+    await navigator.clipboard.writeText(value);
+    toast(`Copied ${label} to the clipboard.`);
+    if (button) {
+      button.classList.add("copied");
+      button.replaceChildren(icon("check"));
+      setTimeout(() => { button.classList.remove("copied"); button.replaceChildren(icon("copy")); }, 1600);
     }
+    return true;
+  } catch {
+    toast(`Copy failed. Select the ${label} and copy it manually.`, "error");
+    return false;
+  }
+}
+
+function copyButton(label, value) {
+  const button = el("button", { type: "button", class: "btn btn-secondary btn-sm" }, icon("copy"), `Copy ${label}`);
+  button.addEventListener("click", async () => {
+    const ok = await copyText(value, label);
+    button.lastChild.textContent = ok ? `Copied ${label}` : `Copy failed — select the ${label} and copy it manually`;
   });
   return button;
+}
+
+function copyIconButton(label, value) {
+  const button = el("button", { type: "button", class: "icon-btn", "aria-label": `Copy ${label}`, title: `Copy ${label}` }, icon("copy"));
+  button.addEventListener("click", () => copyText(value, label, button));
+  return button;
+}
+
+function emptyState({ iconName = "info", title, text = "", action = null }) {
+  return el("div", { class: "empty" }, icon(iconName, "icon-xl"), el("p", { class: "empty-title" }, title),
+    text ? el("p", { class: "hint" }, text) : null, action);
+}
+
+function errorState(message, retry) {
+  return el("div", { class: "empty" }, icon("alert", "icon-xl"), el("p", { class: "empty-title" }, "Could not load this"),
+    el("p", { class: "hint" }, message),
+    retry ? el("button", { type: "button", class: "btn btn-secondary", onclick: retry }, icon("refresh"), "Try again") : null);
+}
+
+/** One full-width row inside a table body (empty and error states). */
+function tableMessage(tbody, node) {
+  const columns = tbody.closest("table").querySelectorAll("thead th").length;
+  tbody.replaceChildren(el("tr", {}, el("td", { colspan: columns, class: "empty-cell" }, node)));
+}
+
+function tableSkeleton(tbody, rows = 4) {
+  const columns = tbody.closest("table").querySelectorAll("thead th").length;
+  const widths = ["w-80", "w-60", "w-40"];
+  tbody.replaceChildren(...Array.from({ length: rows }, (_, r) => el("tr", { "aria-hidden": "true" },
+    ...Array.from({ length: columns }, (_, c) => el("td", {}, el("span", { class: `skeleton ${widths[(r + c) % 3]}` }))))));
+}
+
+function listSkeleton(listBox, rows = 3) {
+  listBox.replaceChildren(...Array.from({ length: rows }, () => el("li", { class: "card skeleton-card", "aria-hidden": "true" },
+    el("span", { class: "skeleton w-60" }), el("span", { class: "skeleton w-80" }), el("span", { class: "skeleton w-40" }))));
+}
+
+/** A modal confirmation built on <dialog>. Resolves to true only when confirmed. */
+function confirmAction({ title, body, confirmLabel, danger = true }) {
+  const dialog = document.getElementById("confirm-dialog");
+  const ok = document.getElementById("confirm-ok");
+  document.getElementById("confirm-title").textContent = title;
+  document.getElementById("confirm-body").textContent = body;
+  ok.textContent = confirmLabel;
+  ok.className = danger ? "btn btn-danger" : "btn btn-primary";
+  const opener = document.activeElement;
+  return new Promise((resolve) => {
+    const done = (value) => {
+      ok.onclick = null;
+      document.getElementById("confirm-cancel").onclick = null;
+      dialog.onclose = null;
+      if (dialog.open) dialog.close();
+      opener?.focus?.();
+      resolve(value);
+    };
+    ok.onclick = () => done(true);
+    document.getElementById("confirm-cancel").onclick = () => done(false);
+    dialog.onclose = () => done(false);  // Escape
+    dialog.showModal();
+    document.getElementById("confirm-cancel").focus();
+  });
+}
+
+// ---------- theme ----------
+
+function storedTheme() {
+  try { return localStorage.getItem(THEME_KEY); } catch { return null; }
+}
+
+function applyTheme(theme) {
+  const next = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  const toggle = document.getElementById("theme-toggle");
+  const label = next === "dark" ? "Switch to light theme" : "Switch to dark theme";
+  toggle.setAttribute("aria-label", label);
+  toggle.title = label;
+  toggle.replaceChildren(icon(next === "dark" ? "sun" : "moon"));
+  for (const button of document.querySelectorAll("[data-theme-choice]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.themeChoice === next));
+  }
+}
+
+function setTheme(theme) {
+  applyTheme(theme);
+  try { localStorage.setItem(THEME_KEY, theme); } catch { /* per-browser preference only */ }
+}
+
+// ---------- mobile navigation ----------
+
+function setNavOpen(open) {
+  document.getElementById("app-view").classList.toggle("nav-open", open);
+  document.getElementById("nav-scrim").hidden = !open;
+  document.getElementById("nav-open").setAttribute("aria-expanded", String(open));
+  if (open) document.querySelector('[role="tab"][aria-selected="true"]')?.focus();
 }
 
 // ---------- sign in / out ----------
@@ -267,11 +466,13 @@ function renderVerifyBanner() {
 
 async function signedIn(me) {
   state.me = me;
-  document.getElementById("account-email").textContent = `Signed in as ${me.email}`;
+  const email = document.getElementById("account-email");
+  email.textContent = `Signed in as ${me.email}`;
+  email.title = me.email;
   show("app");
   renderVerifyBanner();
   showPairCard();
-  selectTab(currentTab());
+  selectTab(tabFromHash() ?? currentTab());
   schedulePoll(0);
 }
 
@@ -360,9 +561,14 @@ async function approvePairing() {
 
 // ---------- overview ----------
 
+function metric(label, value, { iconName, hint = null, highlight = false } = {}) {
+  return el("div", { class: highlight ? "highlight" : null },
+    el("dt", {}, iconName ? icon(iconName) : null, label), el("dd", {}, value),
+    hint ? el("p", { class: "hint" }, hint) : null);
+}
+
 function cardList(entries) {
-  return entries.map(([label, value, hint]) => el("div", {}, el("dt", {}, label), el("dd", {}, value),
-    hint ? el("p", { class: "hint" }, hint) : null));
+  return entries.map(([label, value, hint]) => metric(label, formatNumber(value), { hint }));
 }
 
 async function loadOverview() {
@@ -370,63 +576,156 @@ async function loadOverview() {
   const cards = document.getElementById("overview-cards");
   const more = document.getElementById("overview-more");
   setStatus(section, "Loading…");
-  cards.replaceChildren();
+  cards.replaceChildren(...Array.from({ length: 4 }, () => el("div", { "aria-hidden": "true" },
+    el("span", { class: "skeleton w-40" }), el("span", { class: "skeleton w-60" }))));
   more.replaceChildren();
+  document.getElementById("match-breakdown").replaceChildren(el("span", { class: "skeleton w-80" }));
   try {
     const d = await getJSON(`${API}/overview`);
-    cards.replaceChildren(...cardList([
-      ["Websites", d.websites], ["Aliases", d.aliases], ["Emails received", d.emails_total],
-      ["Unread", d.unread, d.unread ? "In your inbox" : null],
-    ]));
+    cards.replaceChildren(
+      metric("Websites", formatNumber(d.websites), { iconName: "globe" }),
+      metric("Aliases", formatNumber(d.aliases), { iconName: "at",
+        hint: d.websites > d.aliases ? `${formatNumber(d.websites - d.aliases)} website${d.websites - d.aliases === 1 ? "" : "s"} without an alias` : null }),
+      metric("Emails received", formatNumber(d.emails_total), { iconName: "mail" }),
+      metric("Unread", formatNumber(d.unread), { iconName: "inbox", hint: d.unread ? "In your inbox" : null, highlight: d.unread > 0 }),
+    );
     more.replaceChildren(...cardList([
-      ["Nicknames", d.nicknames], ["Consent receipts", d.receipts], ["Matched", d.matched],
-      ["Ambiguous", d.ambiguous], ["No match", d.no_match], ["Investigations", d.investigations],
+      ["Nicknames", d.nicknames], ["Consent receipts", d.receipts], ["Investigations", d.investigations],
     ]));
+    renderBreakdown(d);
     setUnreadBadge(d.unread);
-    setStatus(section, d.websites === 0 ? "No websites yet. Create a signup with the LeakTrace extension to start." : "");
+    setStatus(section, d.websites === 0 ? "No websites yet. Create an alias here or with the LeakTrace extension to start." : "");
   } catch (error) {
+    cards.replaceChildren();
+    document.getElementById("match-breakdown").replaceChildren();
     setStatus(section, error.message, true);
   }
-  await loadRecent();
+  await Promise.all([loadRecent(), loadEmailChart()]);
+}
+
+function renderBreakdown(d) {
+  const box = document.getElementById("match-breakdown");
+  const parts = [
+    ["Matched", d.matched, "tone-accent"], ["Ambiguous", d.ambiguous, "tone-warn"],
+    ["No match", d.no_match, "tone-muted"], ["Unprocessed", d.unprocessed, "tone-faint"],
+  ];
+  const total = d.emails_total;
+  if (!total) {
+    box.replaceChildren(emptyState({ iconName: "activity", title: "No results yet",
+      text: "Match results appear once email arrives at one of your aliases." }));
+    return;
+  }
+  const bar = el("div", { class: "stackbar", role: "img",
+    "aria-label": parts.map(([label, n]) => `${label}: ${n}`).join(", ") });
+  for (const [, n, tone] of parts) {
+    if (!n) continue;
+    const segment = el("span", { class: tone });
+    segment.style.flexGrow = String(n);
+    bar.append(segment);
+  }
+  box.replaceChildren(
+    el("div", { class: "breakdown-total" }, el("strong", {}, formatNumber(total)), el("span", { class: "hint" }, "emails analysed")),
+    bar,
+    el("ul", { class: "legend" }, ...parts.map(([label, n, tone]) => el("li", {},
+      el("span", { class: `swatch ${tone}`, "aria-hidden": "true" }), el("span", {}, label),
+      el("span", { class: "num" }, formatNumber(n)), el("span", { class: "pct" }, percentText(n, total))))),
+  );
+}
+
+async function loadEmailChart() {
+  const chart = document.getElementById("email-chart");
+  const note = document.getElementById("email-chart-note");
+  chart.replaceChildren(el("span", { class: "skeleton w-80" }));
+  note.textContent = "";
+  try {
+    const page = await getJSON(`${API}/inbox?${new URLSearchParams({ limit: CHART_SAMPLE })}`);
+    const complete = page.items.length >= page.total;
+    const days = emailsPerDay(page.items.map((m) => m.received_at), { complete });
+    renderChart(chart, days);
+    const counted = days.reduce((sum, d) => sum + (d.count ?? 0), 0);
+    if (page.total === 0) note.textContent = "No email has arrived at your aliases yet.";
+    else if (!complete && days.some((d) => !d.covered)) {
+      note.textContent = `Based on your ${CHART_SAMPLE} most recent messages; hatched days are older than those and are not counted.`;
+    } else note.textContent = `${formatNumber(counted)} message${counted === 1 ? "" : "s"} in the last ${CHART_DAYS} days.`;
+  } catch (error) {
+    chart.replaceChildren(errorState(error.message, loadEmailChart));
+  }
+}
+
+function renderChart(chart, days) {
+  const max = Math.max(1, ...days.map((d) => d.count ?? 0));
+  const step = max <= 4 ? 1 : Math.ceil(max / 4);
+  const top = Math.ceil(max / step) * step;
+  const bars = days.map((d) => {
+    const label = weekdayFormat.format(new Date(`${d.date}T00:00:00Z`));
+    const tip = d.covered ? `${label}: ${d.count} email${d.count === 1 ? "" : "s"}` : `${label}: not loaded`;
+    const col = el("div", { class: `bar-col${!d.covered ? " no-data" : d.count === 0 ? " zero" : ""}`, "data-tip": tip },
+      el("span", { class: "bar" }));
+    if (d.covered && d.count > 0) col.firstChild.style.height = `${(d.count / top) * 100}%`;
+    return col;
+  });
+  const gridlines = [0.5, 1].map((f) => {
+    const line = el("div", { class: "gridline", "aria-hidden": "true" }, el("span", {}, formatNumber(Math.round(top * f))));
+    line.style.bottom = `${f * 100}%`;
+    return line;
+  });
+  const summary = days.map((d) => `${dayFormat.format(new Date(`${d.date}T00:00:00Z`))}: ${d.covered ? d.count : "not loaded"}`).join("; ");
+  chart.replaceChildren(
+    el("div", { class: "chart", role: "img", "aria-label": `Emails per day, last ${CHART_DAYS} days. ${summary}` }, ...gridlines, ...bars),
+    el("div", { class: "chart-axis", "aria-hidden": "true" },
+      ...days.map((d) => el("span", {}, dayFormat.format(new Date(`${d.date}T00:00:00Z`))))));
 }
 
 async function loadRecent() {
   const listBox = document.getElementById("recent-list");
   say("recent-status", "Loading…");
-  listBox.replaceChildren();
+  listSkeleton(listBox, 2);
   try {
     const page = await getJSON(`${API}/inbox?${new URLSearchParams({ limit: 5 })}`);
     listBox.replaceChildren(...page.items.map((m) => inboxCard(m, { compact: true })));
     say("recent-status", page.total === 0 ? "No email has arrived at your aliases yet." : "");
   } catch (error) {
+    listBox.replaceChildren();
     say("recent-status", error.message, "error");
   }
 }
 
-// ---------- my websites ----------
+// ---------- websites & aliases ----------
 
 async function loadWebsites() {
   const section = document.getElementById("view-websites");
   const body = document.getElementById("websites-body");
   setStatus(section, "Loading…");
-  body.replaceChildren();
+  tableSkeleton(body);
   const params = new URLSearchParams({ limit: PAGE_SIZE, offset: state.offsets.websites, filter: state.websiteFilter });
   if (state.websiteQuery) params.set("q", state.websiteQuery);
   try {
     const page = await getJSON(`${API}/signups?${params}`);
     body.replaceChildren(...page.items.map((s) => el("tr", {},
-      el("td", {}, siteLabel(s.site_name, s.site_domain)),
-      el("td", { class: "marker" }, s.alias ?? "—"),
-      el("td", {}, s.nickname ?? (s.real_name_required ? "Real name required" : "—")),
-      el("td", {}, formatTime(s.created_at)),
-      el("td", {}, s.receipt_count),
-      el("td", {}, s.email_count),
-      el("td", {}, el("button", { type: "button", "aria-label": `Show details for ${s.site_name}`,
-        onclick: () => showWebsite(s.id) }, "Details")))));
+      el("td", {}, el("span", { class: "cell-title" }, s.site_name), s.site_domain ? el("span", { class: "cell-sub" }, s.site_domain) : null),
+      el("td", {}, s.alias ? el("span", { class: "alias-cell" }, el("span", { class: "marker" }, s.alias), copyIconButton("alias", s.alias))
+        : el("span", { class: "dim" }, "No alias")),
+      el("td", {}, s.nickname ?? (s.real_name_required ? el("span", { class: "badge badge-neutral" }, "Real name required") : el("span", { class: "dim" }, "—"))),
+      el("td", { class: "time" }, formatTime(s.created_at)),
+      el("td", { class: "num" }, formatNumber(s.receipt_count)),
+      el("td", { class: "num" }, formatNumber(s.email_count)),
+      el("td", { class: "actions" }, el("div", { class: "row" },
+        el("button", { type: "button", class: "btn btn-secondary btn-sm", "aria-label": `Show details for ${s.site_name}`,
+          onclick: () => showWebsite(s.id) }, "Details"),
+        el("button", { type: "button", class: "icon-btn", "aria-label": `Delete ${s.site_name}`, title: "Delete",
+          onclick: () => deleteWebsite(s) }, icon("trash")))))));
     renderPager("websites", page, loadWebsites);
     const filtered = state.websiteQuery || state.websiteFilter !== "all";
-    setStatus(section, page.total === 0 ? (filtered ? "No websites match this search." : "No websites yet.") : "");
+    if (page.total === 0) {
+      const message = filtered ? "No websites match this search." : "No websites yet.";
+      tableMessage(body, filtered
+        ? emptyState({ iconName: "search", title: message, text: "Try a different search or show all websites." })
+        : emptyState({ iconName: "at", title: message, text: "Create an alias for a website you are about to sign up to.",
+          action: el("button", { type: "button", class: "btn btn-primary", onclick: openAliasDialog }, icon("plus"), "New alias") }));
+      setQuietStatus(section, message);
+    } else setStatus(section, "");
   } catch (error) {
+    tableMessage(body, errorState(error.message, loadWebsites));
     setStatus(section, error.message, true);
   }
 }
@@ -440,23 +739,107 @@ async function showWebsite(id) {
     const d = await getJSON(`${API}/signups/${encodeURIComponent(id)}`);
     const rows = [
       ["Website", d.site_name], ["Domain", d.site_domain ?? "—"], ["Signup ID", `#${d.id}`],
-      ["Alias", d.alias ?? "—"], ["Nickname", d.nickname ?? "—"], ["Surname variant", d.surname_variant ?? "—"],
+      ["Alias", d.alias ? el("span", { class: "marker" }, d.alias) : "—"], ["Nickname", d.nickname ?? "—"],
+      ["Surname variant", d.surname_variant ?? "—"],
       ["Real name required", d.real_name_required ? "Yes" : "No"], ["Signed up", formatTime(d.created_at)],
     ];
     body.replaceChildren(
       el("dl", {}, ...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
-      el("div", { class: "row" }, d.alias ? copyButton("alias", d.alias) : null, d.nickname ? copyButton("nickname", d.nickname) : null),
+      el("div", { class: "row detail-actions" }, d.alias ? copyButton("alias", d.alias) : null, d.nickname ? copyButton("nickname", d.nickname) : null,
+        el("button", { type: "button", class: "btn btn-ghost btn-sm", onclick: () => deleteWebsite(d) }, icon("trash"), "Delete website")),
       el("h4", {}, "Consent receipts"),
       d.receipts.length ? list(d.receipts.map((r) => `${formatTime(r.recorded_at)} — ${ACTION_LABELS[r.action] ?? "Not recorded"}`
         + `${r.evidence_basis === "user_reported" ? " · user-reported (not verified)" : ""}`)) : el("p", { class: "hint" }, "None yet."),
       el("h4", {}, "Email received at this alias"),
       d.emails.length ? list(d.emails.map((m) => el("span", {}, formatTime(m.received_at), " ", statusBadge(m.match_status),
         m.sender_domain ? ` from ${m.sender_domain} (claimed)` : ""))) : el("p", { class: "hint" }, "None yet."),
+      el("h4", {}, "SMS investigations"),
+      d.sms_investigations?.length ? el("ul", {}, ...d.sms_investigations.map((m) => el("li", {},
+        `${formatTime(m.created_at)} — `, m.confirmed ? sourceBadge("confirmed") : sourceBadge(m.status ?? "unknown"),
+        m.confirmed ? " · you confirmed this website" : " · suggested, not confirmed", " ",
+        el("button", { type: "button", class: "link", onclick: () => openSavedSms(m.id) }, "Open"))))
+        : el("p", { class: "hint" }, "None saved."),
       el("p", { class: "notice", role: "note" }, d.notice));
   } catch (error) {
     body.replaceChildren(el("p", { class: "error", role: "alert" }, error.message));
   }
   panel.focus();
+}
+
+async function deleteWebsite(s) {
+  const confirmed = await confirmAction({
+    title: `Delete ${s.site_name}?`,
+    body: `${s.alias ? `Its alias ${s.alias} will no longer be linked to this website. ` : ""}`
+      + "Email records and consent receipts are kept but unlinked. This cannot be undone.",
+    confirmLabel: "Delete website",
+  });
+  if (!confirmed) return;
+  try {
+    await api(`/signups/${encodeURIComponent(s.id)}`, { method: "DELETE" });
+    document.getElementById("website-detail").hidden = true;
+    toast(`Deleted ${s.site_name}.`);
+    await loadWebsites();
+  } catch (error) {
+    toast(error.status === 409 ? "This website is still referenced by other records and cannot be deleted." : error.message, "error");
+  }
+}
+
+function openAliasDialog({ siteName = "", siteDomain = "" } = {}) {
+  const dialog = document.getElementById("alias-dialog");
+  const form = document.getElementById("alias-form");
+  form.reset();
+  // Prefilled only when called from the SMS analyzer; a click event passes no names.
+  form.elements.site_name.value = typeof siteName === "string" ? siteName : "";
+  form.elements.site_domain.value = typeof siteDomain === "string" ? siteDomain : "";
+  form.hidden = false;
+  document.getElementById("alias-created").hidden = true;
+  markInvalid(form, [], "alias-status");
+  say("alias-status", "");
+  dialog.showModal();
+  document.getElementById("alias-site-name").focus();
+}
+
+async function createAlias(event) {
+  event.preventDefault();
+  const form = event.target;
+  const submit = document.getElementById("alias-submit");
+  markInvalid(form, [], "alias-status");
+  const name = form.elements.site_name.value.trim();
+  if (!name) {
+    say("alias-status", "Website name: enter the name of the website.", "error");
+    markInvalid(form, ["site_name"], "alias-status");
+    return;
+  }
+  const payload = { site_name: name, real_name_required: form.elements.real_name_required.checked };
+  const domain = form.elements.site_domain.value.trim();
+  const surname = form.elements.surname_variant.value.trim();
+  if (domain) payload.site_domain = domain;
+  if (surname) payload.surname_variant = surname;
+  submit.disabled = true;
+  say("alias-status", "Creating…");
+  try {
+    const created = await api("/signups", { method: "POST", body: payload });
+    say("alias-status", "");
+    form.hidden = true;
+    const done = document.getElementById("alias-created");
+    done.hidden = false;
+    document.getElementById("alias-created-body").replaceChildren(
+      el("p", { class: "hint" }, `Use this alias when you sign up to ${created.site_name}.`),
+      created.alias ? el("div", { class: "created-alias" }, el("span", { class: "marker" }, created.alias), copyButton("alias", created.alias))
+        : el("p", {}, "No alias was generated."),
+      created.nickname ? el("p", {}, "Nickname: ", el("strong", {}, created.nickname), created.surname_variant ? ` ${created.surname_variant}` : "")
+        : el("p", { class: "hint" }, "No nickname: this site uses your real name, which LeakTrace does not store."),
+      el("p", { class: "hint" }, "LeakTrace only receives email for this alias if mail routing for the alias domain is set up."));
+    done.querySelector("button.btn-primary")?.focus();
+    toast(`Created an alias for ${created.site_name}.`);
+    state.offsets.websites = 0;
+    if (currentTab()?.id === "tab-websites") loadWebsites();
+  } catch (error) {
+    say("alias-status", error.message, "error");
+    markInvalid(form, error.fields, "alias-status");
+  } finally {
+    submit.disabled = false;
+  }
 }
 
 // ---------- consent receipts ----------
@@ -473,7 +856,7 @@ async function loadReceipts() {
   const section = document.getElementById("view-receipts");
   const body = document.getElementById("receipts-body");
   setStatus(section, "Loading…");
-  body.replaceChildren();
+  tableSkeleton(body, 3);
   try {
     const page = await getJSON(`/consent-receipts?${new URLSearchParams({ limit: PAGE_SIZE, offset: state.offsets.receipts })}`);
     body.replaceChildren(...page.items.map((r) => {
@@ -481,17 +864,22 @@ async function loadReceipts() {
         r.notice_text_stored ? "notice text" : null, r.consent_text_stored ? "consent wording" : null,
         r.notice_version ? "version" : null].filter(Boolean).join(", ") || "none";
       return el("tr", {},
-        el("td", {}, formatTime(r.recorded_at)),
-        el("td", {}, r.site_name ? siteLabel(r.site_name, r.site_domain) : "Signup deleted"),
-        el("td", {}, actionLabel(r.action)),
+        el("td", { class: "time" }, formatTime(r.recorded_at)),
+        el("td", {}, r.site_name ? siteLabel(r.site_name, r.site_domain) : el("span", { class: "dim" }, "Signup deleted")),
+        el("td", {}, el("span", { class: "badge badge-neutral" }, actionLabel(r.action))),
         el("td", {}, sourceLabel(r)),
         el("td", {}, kept),
-        el("td", {}, el("button", { type: "button", "aria-label": `Show details for receipt ${r.id}`,
-          onclick: () => showReceiptDetail(r.id) }, "Details")));
+        el("td", { class: "actions" }, el("button", { type: "button", class: "btn btn-secondary btn-sm",
+          "aria-label": `Show details for receipt ${r.id}`, onclick: () => showReceiptDetail(r.id) }, "Details")));
     }));
     renderPager("receipts", page, loadReceipts);
-    setStatus(section, page.total === 0 ? "No consent receipts yet." : "");
+    if (page.total === 0) {
+      tableMessage(body, emptyState({ iconName: "receipt", title: "No consent receipts yet.",
+        text: "Record what a website showed you and what you agreed to, using the form below." }));
+      setQuietStatus(section, "No consent receipts yet.");
+    } else setStatus(section, "");
   } catch (error) {
+    tableMessage(body, errorState(error.message, loadReceipts));
     setStatus(section, error.message, true);
   }
 }
@@ -511,16 +899,16 @@ async function showReceiptDetail(id) {
       ["Reported event time (unverified)", r.reported_occurred_at ? formatTime(r.reported_occurred_at) : "Not reported"],
       ["Notice URL (not fetched)", r.source_url ?? "—"],
       ["Notice version", r.notice_version ?? "—"],
-      ["Notice hash", r.content_hash ?? "—"],
+      ["Notice hash", r.content_hash ? el("span", { class: "marker" }, r.content_hash) : "—"],
     ];
     body.replaceChildren(
       el("p", { class: "notice", role: "note" }, r.legal_notice),
       el("dl", {}, ...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
       el("p", { class: "hint" }, r.timestamp_note),
       el("h4", {}, "Notice text"),
-      r.notice_text ? el("div", { class: "prewrap" }, r.notice_text) : el("p", {}, "Not stored."),
+      r.notice_text ? el("div", { class: "prewrap" }, r.notice_text) : el("p", { class: "hint" }, "Not stored."),
       el("h4", {}, "Consent prompt wording"),
-      r.consent_text ? el("div", { class: "prewrap" }, r.consent_text) : el("p", {}, "Not stored."));
+      r.consent_text ? el("div", { class: "prewrap" }, r.consent_text) : el("p", { class: "hint" }, "Not stored."));
   } catch (error) {
     body.replaceChildren(el("p", { class: "error", role: "alert" }, error.message));
   }
@@ -537,7 +925,7 @@ async function createReceipt(event) {
   event.preventDefault();
   const form = event.target;
   const status = document.getElementById("receipt-form-status");
-  status.classList.remove("error");
+  status.className = "status";
   markInvalid(form, [], "receipt-form-status");
   status.textContent = "Saving…";
   try {
@@ -558,6 +946,8 @@ async function createReceipt(event) {
     const saved = await api("/consent-receipts", { method: "POST", body: payload });
     form.reset();
     status.textContent = `Saved receipt ${saved.id} as user-reported.`;
+    status.classList.add("ok");
+    toast(`Saved receipt ${saved.id}.`);
     state.offsets.receipts = 0;
     await loadReceipts();
   } catch (error) {
@@ -583,7 +973,7 @@ function inboxStatusBadge(m) {
 function inboxCard(m, { compact = false } = {}) {
   const title = m.tracked ? (m.subject ?? "(no subject)") : "Recorded before inbox tracking";
   const meta = [
-    el("span", {}, formatTime(m.received_at)),
+    el("span", { class: "time" }, formatTime(m.received_at)),
     el("span", {}, m.site_name ? siteLabel(m.site_name, m.site_domain) : "No website"),
     m.alias ? el("span", { class: "marker" }, m.alias) : null,
   ];
@@ -596,10 +986,18 @@ function inboxCard(m, { compact = false } = {}) {
         inboxStatusBadge(m)),
       el("p", { class: "card-line" }, m.tracked && m.status !== "unmatched" ? notificationText(m) : reasonText(m.status_reason) ?? ""),
       el("p", { class: "card-line hint" }, m.tracked ? `From ${senderText(m)}` : "Sender and subject were not stored for this record."),
-      el("p", { class: "card-meta hint" }, ...meta.filter(Boolean).flatMap((node, i) => (i ? [" · ", node] : [node]))),
-      compact ? null : el("button", { type: "button", "aria-label": `Open message: ${title}`,
-        onclick: () => showInboxDetail(m.id) }, "Open")));
+      el("p", { class: "card-meta hint" }, ...meta.filter(Boolean)),
+      compact ? null : el("div", { class: "card-foot" }, el("button", { type: "button", class: "btn btn-secondary btn-sm",
+        "aria-label": `Open message: ${title}`, onclick: () => showInboxDetail(m.id) }, "Open"))));
 }
+
+const INBOX_EMPTY = {
+  all: ["No email has arrived at your aliases yet.", "Email sent to any of your aliases appears here within about 30 seconds."],
+  unread: ["No unread email.", "You are all caught up."],
+  matched: ["No email linked to your websites.", "Messages sent to one of your aliases are linked to its website."],
+  unmatched: ["No unmatched email.", "Messages appear here when they are no longer linked to a website."],
+  failed: ["No failed messages.", "A message is marked failed when its leak analysis could not run."],
+};
 
 async function loadInbox() {
   const section = document.getElementById("view-inbox");
@@ -608,6 +1006,7 @@ async function loadInbox() {
   retry.hidden = true;
   setStatus(section, "Loading…");
   listBox.setAttribute("aria-busy", "true");
+  listSkeleton(listBox);
   const params = new URLSearchParams({ limit: PAGE_SIZE, offset: state.offsets.inbox, filter: state.inboxFilter });
   try {
     const page = await getJSON(`${API}/inbox?${params}`);
@@ -616,11 +1015,11 @@ async function loadInbox() {
     setUnreadBadge(page.unread);
     document.getElementById("inbox-read-all").disabled = page.unread === 0;
     document.getElementById("inbox-notice").textContent = page.notice;
-    const empty = {
-      all: "No email has arrived at your aliases yet.", unread: "No unread email.",
-      matched: "No email linked to your websites.", unmatched: "No unmatched email.", failed: "No failed messages.",
-    }[state.inboxFilter];
-    setStatus(section, page.total === 0 ? empty : `${unreadLabel(page.unread)}.`);
+    const [empty, hint] = INBOX_EMPTY[state.inboxFilter];
+    if (page.total === 0) {
+      listBox.replaceChildren(el("li", {}, emptyState({ iconName: "inbox", title: empty, text: hint })));
+      setQuietStatus(section, empty);
+    } else setStatus(section, `${unreadLabel(page.unread)}.`);
   } catch (error) {
     listBox.replaceChildren();
     setStatus(section, error.message, true);
@@ -708,6 +1107,390 @@ async function markAllRead() {
   }
 }
 
+// ---------- SMS analyzer ----------
+
+const SOURCE_LABELS = { confirmed: "Confirmed source", strong: "Strong match", possible: "Possible match", unknown: "Unknown source" };
+const SOURCE_EXPLAINED = {
+  confirmed: "You confirmed which website or service this message relates to.",
+  strong: "Several independent pieces of evidence point to the same service.",
+  possible: "There is some evidence, but not enough to point to one service.",
+  unknown: "The message does not contain enough reliable information to suggest a source.",
+};
+const ENTITY_LABELS = {
+  email: "Email address", phone: "Phone number", url: "Link", domain: "Domain", person: "Name", business: "Business",
+  reference: "Reference", date: "Date or time", code: "Verification code", card: "Card number",
+};
+const CERTAINTY_LABELS = { validated: "Validated", pattern: "Pattern", uncertain: "Uncertain", user_added: "Added by you" };
+const SIGNAL_LABELS = {
+  alias_in_message: "Your alias appears", nickname_in_message: "Your nickname appears",
+  surname_in_message: "Your surname variant appears", domain_in_message: "Domain mentioned",
+  name_in_message: "Name mentioned", sender_previously_confirmed: "Sender confirmed before", sender_id_name: "Sender ID matches name",
+};
+const SMS_SAMPLES = {
+  clinic: { sender: "ExmplClinic", text: "Your appointment at Example Clinic is confirmed for 12 Oct at 3:30pm. Contact us at appointments@exampleclinic.com or call +44 20 7946 0958. Ref APT-20481" },
+  otp: { sender: "62820", text: "123456 is your Example Shop verification code. Do not share it. Reset your password: shop.example.com/reset?token=abcdEFGH1234ijklMNOP" },
+  parcel: { sender: "+44 7700 900123", text: "Hi Alex, your parcel 7781 is waiting. Pay the redelivery fee at bit.ly/3xYzQ1 - Parcel Express" },
+  none: { sender: "", text: "Hey, are we still on for tonight?" },
+};
+
+/** replaceChildren, skipping empty values and flattening lists (like el()). */
+function fill(node, ...children) {
+  node.replaceChildren(...children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false)
+    .map((c) => (c instanceof Node ? c : String(c))));
+}
+
+function sourceBadge(status) {
+  return el("span", { class: `badge badge-src-${status}` }, SOURCE_LABELS[status] ?? status);
+}
+
+function smsRequest() {
+  const form = document.getElementById("sms-form");
+  const payload = { text: form.elements.text.value };
+  const sender = form.elements.sender.value.trim();
+  const label = form.elements.label.value.trim();
+  if (sender) payload.sender = sender;
+  if (label) payload.label = label;
+  if (form.elements.received_at.value) {
+    const when = new Date(form.elements.received_at.value);
+    if (Number.isNaN(when.getTime())) throw new RequestError("Received: not a valid date.", ["received_at"]);
+    payload.received_at = when.toISOString();
+  }
+  if (state.sms.exclude.length) payload.exclude = state.sms.exclude;
+  if (state.sms.additions.length) payload.additions = state.sms.additions;
+  return payload;
+}
+
+function updateSmsCounter() {
+  const n = document.getElementById("sms-text").value.length;
+  const counter = document.getElementById("sms-count");
+  counter.textContent = `${formatNumber(n)} / 2,000 characters`;
+  counter.classList.toggle("error", n > 2000);
+}
+
+function loadSmsSample(name) {
+  const sample = SMS_SAMPLES[name];
+  if (!sample) return;
+  const form = document.getElementById("sms-form");
+  form.elements.text.value = sample.text;
+  form.elements.sender.value = sample.sender;
+  form.elements.label.value = "Fictional sample";
+  form.elements.received_at.value = "";
+  state.sms.exclude = [];
+  state.sms.additions = [];
+  updateSmsCounter();
+  document.getElementById("sms-text").focus();
+}
+
+function clearSms() {
+  document.getElementById("sms-form").reset();
+  document.getElementById("sms-sample").value = "";
+  state.sms = { exclude: [], additions: [], analysis: null, saved: null };
+  updateSmsCounter();
+  markInvalid(document.getElementById("sms-form"), [], null);
+  setStatus(document.getElementById("view-sms"), "");
+  document.getElementById("sms-result").replaceChildren(emptyState({ iconName: "sms", title: "No message analysed yet",
+    text: "Paste a message, or load a fictional sample, and select Analyze message." }));
+}
+
+async function analyzeSms(event) {
+  event?.preventDefault();
+  const form = document.getElementById("sms-form");
+  const section = document.getElementById("view-sms");
+  const result = document.getElementById("sms-result");
+  const button = document.getElementById("sms-analyze");
+  markInvalid(form, [], null);
+  if (!form.elements.text.value.trim()) {
+    setStatus(section, "Message text: paste the message you want to analyse.", true);
+    markInvalid(form, ["text"], null);
+    return;
+  }
+  button.disabled = true;
+  setStatus(section, "Analysing…");
+  result.replaceChildren(el("div", { class: "skeleton-card", "aria-hidden": "true" },
+    el("span", { class: "skeleton w-60" }), el("span", { class: "skeleton w-80" }), el("span", { class: "skeleton w-40" })));
+  try {
+    const request = smsRequest();
+    const analysis = await api(`${API}/sms/analyze`, { method: "POST", body: request });
+    state.sms.analysis = analysis;
+    state.sms.request = request;
+    state.sms.saved = null;
+    renderSmsAnalysis(analysis);
+    setStatus(section, `${SOURCE_LABELS[analysis.status]}. ${analysis.entities.length} detail${analysis.entities.length === 1 ? "" : "s"} found.`);
+  } catch (error) {
+    result.replaceChildren(errorState(error.message, null));
+    setStatus(section, error.message, true);
+    markInvalid(form, error.fields, null);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function signalItem(s) {
+  return el("li", { class: s.weak ? "signal weak" : "signal" },
+    el("span", { class: "signal-type" }, SIGNAL_LABELS[s.type] ?? s.type, s.weak ? " · weak" : ""),
+    el("span", {}, s.explanation),
+    s.excerpt ? el("q", { class: "excerpt" }, s.excerpt) : null);
+}
+
+function candidateCard(c, { saved = null } = {}) {
+  const related = c.signup_id && c.email_count !== undefined && c.email_count !== null
+    ? el("p", { class: "hint" }, `${formatNumber(c.email_count)} email${c.email_count === 1 ? "" : "s"} received at this website's alias`
+      + (c.last_email_at ? `, latest ${formatTime(c.last_email_at)}` : "")
+      + (c.sms_count ? ` · ${formatNumber(c.sms_count)} saved SMS investigation${c.sms_count === 1 ? "" : "s"}` : "") + ".")
+    : null;
+  const rejected = saved?.rejected?.includes(c.key);
+  const confirmedHere = saved?.confirmed?.key === c.key;
+  const actions = el("div", { class: "row candidate-actions" });
+  if (saved) {
+    if (!confirmedHere) actions.append(el("button", { type: "button", class: "btn btn-primary btn-sm",
+      onclick: () => smsAction("confirm", { candidate_key: c.key }) }, icon("check"), "Confirm this source"));
+    if (!rejected) actions.append(el("button", { type: "button", class: "btn btn-secondary btn-sm",
+      onclick: () => smsAction("reject", { candidate_key: c.key }) }, "Not this source"));
+  }
+  if (c.signup_id) {
+    actions.append(el("button", { type: "button", class: "btn btn-ghost btn-sm",
+      onclick: () => { selectTab(document.getElementById("tab-websites")); showWebsite(c.signup_id); } }, "View website and email activity"));
+  } else {
+    actions.append(el("button", { type: "button", class: "btn btn-ghost btn-sm",
+      onclick: () => openAliasDialog({ siteName: c.name, siteDomain: c.domain }) }, icon("plus"), "Create a website for this service"));
+  }
+  const signals = c.signals.map((s) => (typeof s === "string" ? { type: s, explanation: SIGNAL_LABELS[s] ?? s, weak: false } : s));
+  return el("article", { class: `candidate${rejected ? " rejected" : ""}`, "data-key": c.key },
+    el("div", { class: "card-head" },
+      el("strong", { class: "card-title" }, c.name),
+      c.signup_id ? el("span", { class: "badge badge-neutral" }, "Your website") : null,
+      confirmedHere ? sourceBadge("confirmed") : sourceBadge(c.status),
+      rejected ? el("span", { class: "badge badge-inbox-failed" }, "You rejected this") : null),
+    c.domain && c.domain !== c.name ? el("p", { class: "hint marker" }, c.domain) : null,
+    el("h4", {}, "Evidence"), el("ul", { class: "signals" }, ...signals.map(signalItem)),
+    c.unknowns?.length ? [el("h4", {}, "What remains unknown"), list(c.unknowns)] : null,
+    related, actions.children.length ? actions : null);
+}
+
+function entityRow(e) {
+  const excluded = state.sms.exclude.includes(e.key) || e.excluded;
+  return el("tr", { class: excluded ? "excluded" : null },
+    el("td", {}, ENTITY_LABELS[e.type] ?? e.type, e.sensitive ? el("span", { class: "badge badge-ambiguous" }, "Sensitive") : null),
+    el("td", {}, el("span", { class: e.type === "email" || e.type === "url" || e.type === "domain" ? "marker" : null }, e.display)),
+    el("td", {}, el("span", { class: "badge badge-neutral" }, CERTAINTY_LABELS[e.certainty] ?? e.certainty)),
+    el("td", {}, e.relation ?? e.note ?? "—"),
+    el("td", { class: "actions" }, e.key.startsWith("added:") ? el("button", { type: "button", class: "btn btn-ghost btn-sm",
+      onclick: () => { state.sms.additions.splice(Number(e.key.split(":")[1]), 1); analyzeSms(); } }, "Remove")
+      : el("button", { type: "button", class: "btn btn-ghost btn-sm", "aria-pressed": String(!excluded),
+        "aria-label": `${excluded ? "Use" : "Ignore"} ${ENTITY_LABELS[e.type] ?? e.type} ${e.display}`,
+        onclick: () => toggleSmsEntity(e.key) }, excluded ? "Use" : "Ignore")));
+}
+
+function toggleSmsEntity(key) {
+  const i = state.sms.exclude.indexOf(key);
+  if (i >= 0) state.sms.exclude.splice(i, 1);
+  else state.sms.exclude.push(key);
+  analyzeSms();
+}
+
+function addSmsDetail(event) {
+  event.preventDefault();
+  const form = event.target;
+  const value = form.elements.value.value.trim();
+  if (!value) return;
+  state.sms.additions.push({ type: form.elements.type.value, value });
+  analyzeSms();
+}
+
+function renderSmsAnalysis(a) {
+  const result = document.getElementById("sms-result");
+  const overview = el("div", { class: "sms-summary" },
+    el("div", { class: "result-summary" }, sourceBadge(a.status), el("span", { class: "hint" }, SOURCE_EXPLAINED[a.status])),
+    el("dl", { class: "details" },
+      el("dt", {}, "Sender"), el("dd", {}, a.sender ? `${a.sender.display} (${a.sender.type.replace("_", " ")})` : "Not given"),
+      el("dt", {}, "Received"), el("dd", {}, a.received_at ? formatTime(a.received_at) : "Not given"),
+      a.label ? [el("dt", {}, "Where"), el("dd", {}, a.label)] : null,
+      el("dt", {}, "Services"), el("dd", {}, a.candidates.map((c) => c.name).join(", ") || "None identified"),
+      el("dt", {}, "Links and domains"), el("dd", {}, a.entities.filter((e) => ["url", "domain"].includes(e.type)).map((e) => e.display).join(", ") || "None"),
+      el("dt", {}, "Email domains"), el("dd", {}, [...new Set(a.entities.filter((e) => e.type === "email").map((e) => e.display.split("@")[1]))].join(", ") || "None")),
+    a.sender_notes.length ? list(a.sender_notes) : null);
+  const candidates = a.candidates.length ? a.candidates.map((c) => candidateCard(c, { saved: state.sms.saved }))
+    : [el("div", { class: "missing" }, el("h4", {}, "Why no source is suggested"), list(a.missing),
+      el("p", { class: "hint" }, "If you know which website this relates to, save the investigation and link it to one of your websites."))];
+  const addForm = el("form", { class: "toolbar add-detail", onsubmit: addSmsDetail },
+    el("label", { for: "sms-add-type", class: "sr-only" }, "Type"),
+    el("select", { id: "sms-add-type", name: "type" }, ...["email", "phone", "domain", "business", "person"].map((t) =>
+      el("option", { value: t }, ENTITY_LABELS[t]))),
+    el("label", { for: "sms-add-value", class: "sr-only" }, "Value"),
+    el("input", { id: "sms-add-value", name: "value", type: "text", maxlength: "200", placeholder: "A detail the analyzer missed" }),
+    el("button", { type: "submit", class: "btn btn-secondary btn-sm" }, icon("plus"), "Add and re-analyse"));
+  fill(result,
+    overview,
+    a.warnings.length ? el("div", { class: "notice", role: "note" }, list(a.warnings)) : null,
+    el("h3", { class: "section-title" }, "Possible sources"), ...candidates,
+    el("h3", { class: "section-title" }, "Personal and other details found"),
+    a.entities.length ? el("div", { class: "table-wrap" }, el("table", { class: "table" },
+      el("caption", { class: "sr-only" }, "Details found in the message"),
+      el("thead", {}, el("tr", {}, ...["Type", "Detail", "Certainty", "Relation to your records", "Correction"].map((h, i) =>
+        el("th", { scope: "col" }, i === 4 ? el("span", { class: "sr-only" }, h) : h)))),
+      el("tbody", {}, ...a.entities.map(entityRow))))
+      : el("p", { class: "hint" }, "No details were found."),
+    addForm,
+    el("p", { class: "hint unavailable" }, icon("info"), " Adding a phone number to your tracked details is not available yet: LeakTrace has no storage for phone numbers."),
+    el("h3", { class: "section-title" }, "Message (sensitive values hidden)"), el("div", { class: "prewrap" }, a.redacted_text),
+    smsSaveBar(),
+    el("p", { class: "notice", role: "note" }, a.notice),
+    el("details", {}, el("summary", {}, "Limitations"), list(a.limitations)));
+}
+
+function smsSaveBar() {
+  if (state.sms.saved) return smsSavedBar(state.sms.saved);
+  const keep = el("input", { type: "checkbox", id: "sms-store-text" });
+  return el("div", { class: "save-bar" },
+    el("label", { class: "check-label", for: "sms-store-text" }, keep, "Also keep the message text, with codes, card numbers and sensitive links removed"),
+    el("button", { type: "button", class: "btn btn-primary", id: "sms-save", onclick: saveSms }, "Save investigation"));
+}
+
+function smsSavedBar(saved) {
+  const select = el("select", { id: "sms-link-site", "aria-label": "Link to one of your websites" }, el("option", { value: "" }, "Link to one of your websites…"));
+  getJSON(`${API}/signups?${new URLSearchParams({ limit: 100 })}`).then((page) => {
+    select.append(...page.items.map((s) => el("option", { value: s.id }, siteLabel(s.site_name, s.site_domain))));
+  }).catch(() => select.append(el("option", { value: "", disabled: true }, "Could not load your websites")));
+  return el("div", { class: "save-bar saved" },
+    el("p", {}, icon("check"), ` Saved as investigation #${saved.id}`, saved.reviewed ? " · reviewed" : "",
+      saved.confirmed ? ` · confirmed: ${saved.confirmed.name}` : ""),
+    el("div", { class: "row" },
+      select,
+      el("button", { type: "button", class: "btn btn-secondary btn-sm", onclick: () => {
+        if (select.value) smsAction("confirm", { signup_id: Number(select.value) });
+      } }, "Link"),
+      el("button", { type: "button", class: "btn btn-secondary btn-sm",
+        onclick: () => smsAction(saved.reviewed ? "unreviewed" : "reviewed") }, saved.reviewed ? "Mark as not reviewed" : "Mark as reviewed"),
+      saved.confirmed ? el("button", { type: "button", class: "btn btn-ghost btn-sm", onclick: () => smsAction("clear") }, "Clear confirmation") : null,
+      el("button", { type: "button", class: "btn btn-ghost btn-sm", onclick: () => deleteSms(saved) }, icon("trash"), "Delete")));
+}
+
+async function saveSms() {
+  const section = document.getElementById("view-sms");
+  try {
+    const body = { ...state.sms.request, store_text: document.getElementById("sms-store-text").checked };
+    const r = await api(`${API}/sms/investigations`, { method: "POST", body });
+    state.sms.saved = r.investigation;
+    toast(r.duplicate ? `This message was already saved as investigation #${r.investigation.id}.` : `Saved investigation #${r.investigation.id}.`);
+    renderSmsAnalysis(state.sms.analysis);
+    loadSmsHistory();
+    loadTimeline();
+    setStatus(section, "");
+  } catch (error) {
+    setStatus(section, error.message, true);
+  }
+}
+
+async function smsAction(action, extra = {}) {
+  const saved = state.sms.saved;
+  if (!saved) return;
+  try {
+    state.sms.saved = await api(`${API}/sms/investigations/${encodeURIComponent(saved.id)}/actions`, { method: "POST", body: { action, ...extra } });
+    toast({ confirm: "Source confirmed.", reject: "Marked as not the source.", clear: "Confirmation cleared.",
+      reviewed: "Marked as reviewed.", unreviewed: "Marked as not reviewed." }[action]);
+    // A live analysis keeps its full report; a saved one opened from history shows what was stored.
+    if (state.sms.analysis) renderSmsAnalysis(state.sms.analysis);
+    else renderSavedSms(state.sms.saved);
+    loadSmsHistory();
+    loadTimeline();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function deleteSms(saved) {
+  const ok = await confirmAction({ title: `Delete investigation #${saved.id}?`,
+    body: "The saved record and your decisions about it are removed. This cannot be undone.", confirmLabel: "Delete" });
+  if (!ok) return;
+  try {
+    await api(`${API}/sms/investigations/${encodeURIComponent(saved.id)}`, { method: "DELETE" });
+    toast(`Deleted investigation #${saved.id}.`);
+    state.sms.saved = null;
+    if (state.sms.analysis) renderSmsAnalysis(state.sms.analysis);
+    else clearSms();
+    loadSmsHistory();
+    loadTimeline();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+/** A saved investigation opened from the history: only what was stored. */
+function renderSavedSms(saved) {
+  state.sms.analysis = null;
+  state.sms.saved = saved;
+  const result = document.getElementById("sms-result");
+  fill(result,
+    el("div", { class: "result-summary" }, sourceBadge(saved.status), el("span", { class: "hint" }, SOURCE_EXPLAINED[saved.status])),
+    el("dl", { class: "details" },
+      el("dt", {}, "Saved"), el("dd", {}, formatTime(saved.created_at)),
+      el("dt", {}, "Sender"), el("dd", {}, saved.sender ? `${saved.sender.display} (${saved.sender.type.replace("_", " ")})` : "Not given"),
+      el("dt", {}, "Received"), el("dd", {}, saved.received_at ? formatTime(saved.received_at) : "Not given"),
+      saved.label ? [el("dt", {}, "Where"), el("dd", {}, saved.label)] : null,
+      el("dt", {}, "Details found"), el("dd", {}, Object.entries(saved.entity_counts).map(([t, n]) => `${n} ${ENTITY_LABELS[t]?.toLowerCase() ?? t}`).join(", ") || "None"),
+      el("dt", {}, "Domains"), el("dd", {}, saved.domains.join(", ") || "None")),
+    el("p", { class: "hint" }, "Evidence quotations and personal details are not stored; analyse the message again to see them."),
+    el("h3", { class: "section-title" }, "Possible sources"),
+    ...(saved.candidates.length ? saved.candidates.map((c) => candidateCard(c, { saved }))
+      : [el("div", { class: "missing" }, el("h4", {}, "Why no source was suggested"), list(saved.missing))]),
+    saved.stored_text ? [el("h3", { class: "section-title" }, "Message (sensitive values hidden)"), el("div", { class: "prewrap" }, saved.stored_text)] : null,
+    smsSavedBar(saved),
+    el("p", { class: "notice", role: "note" }, saved.notice));
+}
+
+async function openSavedSms(id) {
+  if (currentTab()?.id !== "tab-sms") selectTab(document.getElementById("tab-sms"));
+  const section = document.getElementById("view-sms");
+  try {
+    renderSavedSms(await getJSON(`${API}/sms/investigations/${encodeURIComponent(id)}`));
+    setStatus(section, "");
+    document.getElementById("sms-result").closest("section").scrollIntoView({ block: "start" });
+  } catch (error) {
+    setStatus(section, error.message, true);
+  }
+}
+
+async function loadSmsHistory() {
+  const listBox = document.getElementById("sms-history");
+  say("sms-history-status", "Loading…");
+  try {
+    const page = await getJSON(`${API}/sms/investigations?${new URLSearchParams({ limit: 10, offset: state.offsets.sms })}`);
+    listBox.replaceChildren(...page.items.map((s) => el("li", {},
+      el("div", {}, el("span", { class: "cell-title" }, s.confirmed?.name ?? s.matched_site ?? (s.candidates[0]?.name ?? "No source suggested")),
+        el("span", { class: "cell-sub" }, `#${s.id} · saved ${formatTime(s.created_at)}${s.sender ? ` · from ${s.sender.display}` : ""}`)),
+      el("div", { class: "row" }, sourceBadge(s.status), s.reviewed ? el("span", { class: "badge badge-neutral" }, "Reviewed") : null,
+        el("button", { type: "button", class: "btn btn-secondary btn-sm", "aria-label": `Open SMS investigation ${s.id}`,
+          onclick: () => openSavedSms(s.id) }, "Open")))));
+    renderPager("sms", page, loadSmsHistory);
+    say("sms-history-status", page.total === 0 ? "No saved SMS investigations yet." : "");
+  } catch (error) {
+    say("sms-history-status", error.message, "error");
+  }
+}
+
+async function loadTimeline() {
+  const listBox = document.getElementById("timeline-list");
+  say("timeline-status", "Loading…");
+  try {
+    const data = await getJSON(`${API}/timeline?${new URLSearchParams({ limit: 20 })}`);
+    listBox.replaceChildren(...data.items.map((i) => el("li", { class: `timeline-item channel-${i.channel}` },
+      el("span", { class: "timeline-icon", "aria-hidden": "true" }, icon(i.channel === "sms" ? "sms" : "mail")),
+      el("div", { class: "timeline-body" },
+        el("span", { class: "cell-title" }, i.title),
+        el("span", { class: "cell-sub" }, `${formatTime(i.at)} · ${i.linked ? `linked to ${i.site_name}` : "not linked to a website"}`)),
+      el("button", { type: "button", class: "btn btn-ghost btn-sm", "aria-label": `Open ${i.channel === "sms" ? "SMS investigation" : "email"} ${i.id}`,
+        onclick: () => (i.channel === "sms" ? openSavedSms(i.id) : openFromNotification(i.id)) }, "Open"))));
+    say("timeline-status", data.items.length ? "" : "Nothing yet: received email and saved SMS investigations appear here.");
+  } catch (error) {
+    say("timeline-status", error.message, "error");
+  }
+}
+
+async function loadSms() {
+  updateSmsCounter();
+  await Promise.all([loadSmsHistory(), loadTimeline()]);
+}
+
 // ---------- polling and notifications ----------
 
 async function refreshUnread() {
@@ -752,7 +1535,7 @@ async function poll() {
     const fresh = updates.new.filter((m) => m.status !== "unmatched");
     if (fresh.length) notify(fresh);
     if (updates.new.length && currentTab()?.id === "tab-inbox" && state.offsets.inbox === 0) loadInbox();
-    if (updates.new.length && currentTab()?.id === "tab-overview") loadRecent();
+    if (updates.new.length && currentTab()?.id === "tab-overview") { loadRecent(); loadEmailChart(); }
     state.latestEmailId = updates.latest_id;
     state.pollDelay = POLL_INTERVAL_MS;
   } catch (error) {
@@ -785,22 +1568,28 @@ async function loadEmails() {
   const section = document.getElementById("view-activity");
   const body = document.getElementById("emails-body");
   setStatus(section, "Loading…");
-  body.replaceChildren();
+  tableSkeleton(body);
   const params = new URLSearchParams({ limit: PAGE_SIZE, offset: state.offsets.emails });
   if (state.emailStatus) params.set("status", state.emailStatus);
   try {
     const page = await getJSON(`${API}/emails?${params}`);
     body.replaceChildren(...page.items.map((m) => el("tr", {},
-      el("td", {}, formatTime(m.received_at)),
+      el("td", { class: "time" }, formatTime(m.received_at)),
       el("td", {}, statusBadge(m.match_status)),
       el("td", {}, m.match_confidence ?? "—"),
-      el("td", {}, m.site_name ? siteLabel(m.site_name, m.site_domain) : m.recipient_known ? "Known alias" : "Unknown alias"),
-      el("td", {}, m.sender_domain ?? "—"),
-      el("td", {}, el("button", { type: "button", "aria-label": `Show match details for email ${m.id}`,
-        onclick: () => showEmailDetail(m.id) }, "Details")))));
+      el("td", {}, m.site_name ? siteLabel(m.site_name, m.site_domain) : el("span", { class: "dim" }, m.recipient_known ? "Known alias" : "Unknown alias")),
+      el("td", {}, m.sender_domain ? el("span", { class: "marker" }, m.sender_domain) : "—"),
+      el("td", { class: "actions" }, el("button", { type: "button", class: "btn btn-secondary btn-sm",
+        "aria-label": `Show match details for email ${m.id}`, onclick: () => showEmailDetail(m.id) }, "Details")))));
     renderPager("emails", page, loadEmails);
-    setStatus(section, page.total === 0 ? "No email received at your aliases yet." : "");
+    if (page.total === 0) {
+      const message = state.emailStatus ? "No email with this match status." : "No email received at your aliases yet.";
+      tableMessage(body, emptyState({ iconName: "activity", title: message,
+        text: state.emailStatus ? "Choose All to see every message." : "Matches appear here once email arrives at one of your aliases." }));
+      setQuietStatus(section, message);
+    } else setStatus(section, "");
   } catch (error) {
+    tableMessage(body, errorState(error.message, loadEmails));
     setStatus(section, error.message, true);
   }
 }
@@ -832,19 +1621,25 @@ async function showEmailDetail(id) {
 async function loadInvestigations() {
   const body = document.getElementById("investigations-body");
   say("investigations-status", "Loading…");
-  body.replaceChildren();
+  tableSkeleton(body, 2);
   try {
     const page = await getJSON(`${API}/investigations?${new URLSearchParams({ limit: PAGE_SIZE, offset: state.offsets.investigations })}`);
     body.replaceChildren(...page.items.map((i) => el("tr", {},
-      el("td", {}, formatTime(i.created_at)),
-      el("td", {}, statusBadge(i.result)),
+      el("td", { class: "time" }, formatTime(i.created_at)),
+      el("td", {}, i.channel === "sms" ? "SMS" : i.channel === "email" ? "Email" : i.channel),
+      el("td", {}, i.channel === "sms" ? sourceBadge(i.result ?? "unknown") : statusBadge(i.result)),
       el("td", {}, i.confidence ?? "—"),
       el("td", {}, i.matched_site ?? (i.candidate_count ? `${i.candidate_count} possible websites` : "—")),
-      el("td", {}, i.signal_types.join(", ") || "—"),
-      el("td", {}, i.sender_domain ?? "—"))));
+      el("td", {}, i.signal_types.map((t) => SIGNAL_LABELS[t] ?? t).join(", ") || "—"),
+      el("td", {}, i.sender_domain ? el("span", { class: "marker" }, i.sender_domain) : "—"))));
     renderPager("investigations", page, loadInvestigations);
-    say("investigations-status", page.total === 0 ? "No investigations recorded yet." : "");
+    if (page.total === 0) {
+      tableMessage(body, emptyState({ iconName: "search", title: "No investigations recorded yet.",
+        text: "Run a Match check with “Record the result” ticked to save one here." }));
+      say("investigations-status", "");
+    } else say("investigations-status", "");
   } catch (error) {
+    tableMessage(body, errorState(error.message, loadInvestigations));
     say("investigations-status", error.message, "error");
   }
 }
@@ -860,23 +1655,27 @@ async function runCheck(event) {
     if (String(value).trim()) payload[key] = String(value).trim();
   }
   if (document.getElementById("check-record").checked) payload.record_incident = true;
-  result.replaceChildren();
+  result.replaceChildren(el("div", { class: "skeleton-card", "aria-hidden": "true" },
+    el("span", { class: "skeleton w-60" }), el("span", { class: "skeleton w-80" })));
   markInvalid(event.target, [], "check-status");
   setStatus(section, "Checking…");
   try {
     const r = await api("/matcher/check", { method: "POST", body: payload });
-    const matches = r.matches.length === 0 ? [el("p", {}, "None of your websites match these clues.")]
+    const matches = r.matches.length === 0
+      ? [emptyState({ iconName: "shield", title: "No match", text: "None of your websites match these clues." })]
       : r.matches.map((m) => el("article", { class: "result" },
         el("h4", {}, `${siteLabel(m.site_name, m.site_domain)} — confidence: ${m.confidence}`),
         list(m.signals.map((s) => `${s.type}: ${s.explanation}`))));
     result.replaceChildren(
-      el("p", {}, "Result: ", statusBadge(r.status), ` confidence: ${r.confidence}`),
+      el("div", { class: "result-summary" }, el("span", {}, "Result:"), statusBadge(r.status),
+        el("span", { class: "hint" }, `confidence: ${r.confidence}`)),
       ...matches,
       ...(r.warnings.length ? [el("h4", {}, "Warnings"), list(r.warnings)] : []),
       el("h4", {}, "Limitations"), list(r.limitations),
       r.incident_id ? el("p", { class: "hint" }, "Recorded under Leak activity.") : null);
     setStatus(section, "");
   } catch (error) {
+    result.replaceChildren();
     setStatus(section, error.message, true);
     markInvalid(event.target, error.fields, "check-status");
   }
@@ -890,7 +1689,9 @@ async function loadSettings() {
   const me = state.me;
   document.getElementById("account-details").replaceChildren(
     el("dt", {}, "Email"), el("dd", {}, me.email),
-    el("dt", {}, "Verification"), el("dd", {}, me.email_verified ? "Verified" : "Not verified"));
+    el("dt", {}, "Verification"), el("dd", {}, me.email_verified
+      ? el("span", { class: "badge badge-inbox-matched" }, "Verified")
+      : el("span", { class: "badge badge-ambiguous" }, "Not verified")));
   document.getElementById("resend-verification").hidden = me.email_verified;
   await loadExtensions();
 }
@@ -902,8 +1703,9 @@ async function loadExtensions() {
   try {
     const sessions = await getJSON("/extension/sessions");
     listBox.replaceChildren(...sessions.map((s) => el("li", {},
-      `${s.label ?? "Browser extension"} — connected ${formatTime(s.created_at)}, last used ${formatTime(s.last_used_at)}, expires ${formatTime(s.expires_at)} `,
-      el("button", { type: "button", class: "secondary", "aria-label": `Revoke extension connection ${s.id}`,
+      el("div", {}, el("span", { class: "cell-title" }, s.label ?? "Browser extension"),
+        el("span", { class: "cell-sub" }, `Connected ${formatTime(s.created_at)} · last used ${formatTime(s.last_used_at)} · expires ${formatTime(s.expires_at)}`)),
+      el("button", { type: "button", class: "btn btn-secondary btn-sm", "aria-label": `Revoke extension connection ${s.id}`,
         onclick: () => revokeExtension(s.id) }, "Revoke"))));
     say("extensions-status", sessions.length ? "" : "No browser extension is connected.");
   } catch (error) {
@@ -912,6 +1714,12 @@ async function loadExtensions() {
 }
 
 async function revokeExtension(id) {
+  const confirmed = await confirmAction({
+    title: "Revoke this extension connection?",
+    body: "That extension will no longer be able to create or look up your aliases until it is connected again.",
+    confirmLabel: "Revoke",
+  });
+  if (!confirmed) return;
   try {
     await api(`/extension/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
     await loadExtensions();
@@ -940,6 +1748,7 @@ async function changePassword(event) {
       current_password: form.elements.current_password.value, new_password: form.elements.new_password.value } });
     form.reset();
     say("password-status", "Password changed. Your other sessions and browser extensions were signed out.", "ok");
+    toast("Password changed.");
     await loadExtensions();
   } catch (error) {
     say("password-status", error.message, "error");
@@ -968,12 +1777,16 @@ async function deleteAccount(event) {
   }
 }
 
-// ---------- tabs ----------
+// ---------- tabs and routing ----------
 
 const loaders = {
-  overview: loadOverview, websites: loadWebsites, inbox: loadInbox, receipts: loadReceipts, activity: loadActivity,
+  overview: loadOverview, websites: loadWebsites, inbox: loadInbox, sms: loadSms, receipts: loadReceipts, activity: loadActivity,
   check: () => {}, settings: loadSettings,
 };
+
+function tabName(tab) {
+  return tab.id.replace("tab-", "");
+}
 
 function selectTab(tab, focus = false) {
   for (const t of document.querySelectorAll('[role="tab"]')) {
@@ -982,25 +1795,58 @@ function selectTab(tab, focus = false) {
     t.tabIndex = selected ? 0 : -1;
     document.getElementById(t.getAttribute("aria-controls")).hidden = !selected;
   }
+  const name = tabName(tab);
+  document.getElementById("topbar-title").textContent = PAGE_TITLES[name];
+  document.title = `${PAGE_TITLES[name]} · LeakTrace`;
+  // Keep a #pair= link intact until the pairing is approved or cancelled.
+  if (!state.pairCode) history.replaceState(null, "", `${location.pathname}${location.search}#${name}`);
+  setNavOpen(false);
   if (focus) tab.focus();
-  loaders[tab.id.replace("tab-", "")]();
+  loaders[name]();
 }
 
 function currentTab() {
   return document.querySelector('[role="tab"][aria-selected="true"]');
 }
 
+function tabFromHash() {
+  const name = /^#([a-z]+)$/.exec(location.hash)?.[1];
+  return name && loaders[name] ? document.getElementById(`tab-${name}`) : null;
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
+  applyTheme(storedTheme() ?? "dark");
   const tabs = [...document.querySelectorAll('[role="tab"]')];
   for (const tab of tabs) {
     tab.addEventListener("click", () => selectTab(tab));
     tab.addEventListener("keydown", (event) => {
       const index = tabs.indexOf(tab);
-      const next = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: tabs.length - 1 }[event.key];
+      const next = {
+        ArrowRight: index + 1, ArrowDown: index + 1, ArrowLeft: index - 1, ArrowUp: index - 1, Home: 0, End: tabs.length - 1,
+      }[event.key];
       if (next === undefined) return;
       event.preventDefault();
       selectTab(tabs[(next + tabs.length) % tabs.length], true);
     });
+  }
+  window.addEventListener("hashchange", () => {
+    const tab = tabFromHash();
+    if (state.me && tab && tab !== currentTab()) selectTab(tab);
+  });
+  document.getElementById("nav-open").addEventListener("click", () => setNavOpen(true));
+  document.getElementById("nav-close").addEventListener("click", () => setNavOpen(false));
+  document.getElementById("nav-scrim").addEventListener("click", () => setNavOpen(false));
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && document.getElementById("app-view").classList.contains("nav-open")) {
+      setNavOpen(false);
+      document.getElementById("nav-open").focus();
+    }
+  });
+  document.getElementById("theme-toggle").addEventListener("click", () => {
+    setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  });
+  for (const button of document.querySelectorAll("[data-theme-choice]")) {
+    button.addEventListener("click", () => setTheme(button.dataset.themeChoice));
   }
   document.getElementById("login-form").addEventListener("submit", login);
   document.getElementById("register-form").addEventListener("submit", register);
@@ -1014,6 +1860,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     state.offsets.websites = 0;
     loadWebsites();
   });
+  document.getElementById("websites-filter").addEventListener("change", () => {
+    document.getElementById("websites-search").requestSubmit();
+  });
+  document.getElementById("new-alias").addEventListener("click", openAliasDialog);
+  document.getElementById("alias-form").addEventListener("submit", createAlias);
+  for (const button of document.querySelectorAll("[data-close-dialog]")) {
+    button.addEventListener("click", () => button.closest("dialog").close());
+  }
   document.getElementById("website-detail-close").addEventListener("click", () => { document.getElementById("website-detail").hidden = true; });
   document.getElementById("receipt-form").addEventListener("submit", createReceipt);
   document.getElementById("receipt-detail-close").addEventListener("click", () => { document.getElementById("receipt-detail").hidden = true; });
@@ -1038,6 +1892,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.addEventListener("visibilitychange", () => {
     if (state.me && document.visibilityState === "visible") schedulePoll(0);
   });
+  document.getElementById("sms-form").addEventListener("submit", analyzeSms);
+  document.getElementById("sms-text").addEventListener("input", updateSmsCounter);
+  document.getElementById("sms-sample").addEventListener("change", (event) => loadSmsSample(event.target.value));
+  document.getElementById("sms-clear").addEventListener("click", clearSms);
   document.getElementById("check-form").addEventListener("submit", runCheck);
   document.getElementById("resend-verification").addEventListener("click", resendVerification);
   document.getElementById("password-form").addEventListener("submit", changePassword);

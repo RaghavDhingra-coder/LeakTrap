@@ -1,314 +1,653 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
   <title>LeakTrace</title>
   <link rel="stylesheet" href="/dashboard/static/styles.css">
   <script src="/dashboard/static/app.js" defer></script>
 </head>
 <body>
-  <header class="top">
-    <div class="topbar">
-      <h1>LeakTrace</h1>
-      <div id="account-bar" class="account-bar" hidden>
-        <span id="account-email" class="hint"></span>
-        <button type="button" id="sign-out" class="secondary">Sign out</button>
-      </div>
-    </div>
-    <p class="banner" role="note">
-      <strong>Local development only.</strong> This dashboard only answers requests from this computer. Do not expose it publicly.
-    </p>
-    <p id="verify-banner" class="notice" role="note" hidden></p>
-  </header>
+  <!-- Icon sprite: referenced with <use href="#i-…">. -->
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-logo" viewBox="0 0 24 24"><path d="M12 2.5 4 5.6v5.9c0 4.9 3.3 8.9 8 10 4.7-1.1 8-5.1 8-10V5.6Z"/><path d="M8 12.2h2.2l1.3-2.7 2 5 1.3-2.3H16"/></symbol>
+    <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-at" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.6"/><path d="M15.6 12v1.4a2.6 2.6 0 0 0 5.2 0V12a8.8 8.8 0 1 0-3.5 7"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M3.5 13.5 6.2 5.4A1.6 1.6 0 0 1 7.7 4.3h8.6a1.6 1.6 0 0 1 1.5 1.1l2.7 8.1"/><path d="M3.5 13.5v4.6a1.6 1.6 0 0 0 1.6 1.6h13.8a1.6 1.6 0 0 0 1.6-1.6v-4.6h-5l-1.3 2.4h-4.4l-1.3-2.4Z"/></symbol>
+    <symbol id="i-receipt" viewBox="0 0 24 24"><path d="M6 3.5h9l3 3v14l-2-1.3-2 1.3-2-1.3-2 1.3-2-1.3-2 1.3Z"/><path d="m9 11.5 2 2 4-4"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6.5 5 13L17 12h4"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 14.6a1.5 1.5 0 0 0 .3 1.7l.1.1a1.8 1.8 0 1 1-2.6 2.6l-.1-.1a1.5 1.5 0 0 0-2.5 1.1v.2a1.8 1.8 0 0 1-3.6 0v-.1a1.5 1.5 0 0 0-2.5-1.1l-.1.1a1.8 1.8 0 1 1-2.6-2.6l.1-.1a1.5 1.5 0 0 0-1.1-2.5h-.2a1.8 1.8 0 0 1 0-3.6h.1a1.5 1.5 0 0 0 1.1-2.5l-.1-.1a1.8 1.8 0 1 1 2.6-2.6l.1.1a1.5 1.5 0 0 0 2.5-1.1v-.2a1.8 1.8 0 0 1 3.6 0v.1a1.5 1.5 0 0 0 2.5 1.1l.1-.1a1.8 1.8 0 1 1 2.6 2.6l-.1.1a1.5 1.5 0 0 0 1.1 2.5h.2a1.8 1.8 0 0 1 0 3.6h-.1a1.5 1.5 0 0 0-1.4 1Z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h2.5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 12.2A1.8 1.8 0 0 0 8.8 21h6.4a1.8 1.8 0 0 0 1.8-1.8L18 7M9 7V4.8A.8.8 0 0 1 9.8 4h4.4a.8.8 0 0 1 .8.8V7"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2m0 15v2M4.6 4.6 6 6m12 12 1.4 1.4M2.5 12h2m15 0h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6.5 8.5-6.5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.5 2.5 20h19Z"/><path d="M12 10v4.5m0 2.7v.1"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11.5A8 8 0 0 0 5.6 6.8L4 8.5M4 4v4.5h4.5M4 12.5a8 8 0 0 0 14.4 4.7l1.6-1.7M20 20v-4.5h-4.5"/></symbol>
+    <symbol id="i-chev-left" viewBox="0 0 24 24"><path d="m14.5 6-6 6 6 6"/></symbol>
+    <symbol id="i-chev-right" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.5 4 5.6v5.9c0 4.9 3.3 8.9 8 10 4.7-1.1 8-5.1 8-10V5.6Z"/><path d="m9 12 2.2 2.2L15.5 10"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></symbol>
+    <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M10 3.5a2 2 0 0 1 4 0V5h3.5a1.5 1.5 0 0 1 1.5 1.5V10h1.5a2 2 0 0 1 0 4H19v3.5a1.5 1.5 0 0 1-1.5 1.5H14v-1.5a2 2 0 0 0-4 0V19H6.5A1.5 1.5 0 0 1 5 17.5V14h1.5a2 2 0 0 0 0-4H5V6.5A1.5 1.5 0 0 1 6.5 5H10Z"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="i-sms" viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H10l-4.5 4v-4h0A1.5 1.5 0 0 1 4 14.5Z"/><path d="M8 9h8M8 12h5"/></symbol>
+    <symbol id="i-timeline" viewBox="0 0 24 24"><path d="M6 4v16M6 7h12M6 12h9M6 17h11"/><circle cx="6" cy="7" r="1.2"/><circle cx="6" cy="12" r="1.2"/><circle cx="6" cy="17" r="1.2"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.7 5.6 3.7 9s-1.2 6.4-3.7 9c-2.5-2.6-3.7-5.6-3.7-9S9.5 5.6 12 3Z"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5m0-9v.1"/></symbol>
+  </svg>
+  <template id="icon-template"><svg class="icon" aria-hidden="true" focusable="false"><use href=""></use></svg></template>
 
-  <main>
-    <!-- Signed out -->
-    <section id="auth-view" aria-labelledby="auth-heading" hidden>
-      <h2 id="auth-heading">Sign in to LeakTrace</h2>
-      <div class="auth-grid">
-        <form id="login-form" class="check" aria-labelledby="login-title">
-          <h3 id="login-title">Sign in</h3>
+  <!-- Signed out -->
+  <section id="auth-view" class="auth" aria-labelledby="auth-heading" hidden>
+    <div class="auth-intro">
+      <div class="brand brand-lg"><svg class="brand-mark" aria-hidden="true"><use href="#i-logo"></use></svg><span>LeakTrace</span></div>
+      <h1 id="auth-heading">Know which site leaked your address.</h1>
+      <p class="lede">Give every website its own alias and nickname. When email arrives, LeakTrace shows exactly which signup it was sent to.</p>
+      <ul class="auth-points">
+        <li><svg class="icon" aria-hidden="true"><use href="#i-at"></use></svg>One generated alias per website</li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-lock"></use></svg>Metadata only: bodies and attachments are never stored</li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-shield"></use></svg>A match is evidence to investigate, not proof of a leak</li>
+      </ul>
+      <p class="banner" role="note"><strong>Local development only.</strong> This dashboard only answers requests from this computer. Do not expose it publicly.</p>
+    </div>
+    <div class="auth-forms">
+      <form id="login-form" class="card form" aria-labelledby="login-title" novalidate>
+        <h2 id="login-title">Sign in</h2>
+        <div class="field">
           <label for="login-email">Email</label>
           <input id="login-email" name="email" type="email" autocomplete="username" required>
+        </div>
+        <div class="field">
           <label for="login-password">Password</label>
           <input id="login-password" name="password" type="password" autocomplete="current-password" required>
-          <button type="submit">Sign in</button>
-          <p id="login-status" class="status" aria-live="polite"></p>
-        </form>
-        <form id="register-form" class="check" aria-labelledby="register-title">
-          <h3 id="register-title">Create an account</h3>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Sign in</button>
+        <p id="login-status" class="status" aria-live="polite"></p>
+      </form>
+      <form id="register-form" class="card form" aria-labelledby="register-title" novalidate>
+        <h2 id="register-title">Create an account</h2>
+        <div class="field">
           <label for="register-email">Email</label>
           <input id="register-email" name="email" type="email" autocomplete="email" required>
-          <label for="register-password">Password (at least 12 characters)</label>
-          <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="12" required>
-          <button type="submit">Create account</button>
-          <p id="register-status" class="status" aria-live="polite"></p>
-        </form>
-      </div>
-    </section>
-
-    <!-- Signed in -->
-    <div id="app-view" hidden>
-      <section id="pair-card" class="detail" aria-labelledby="pair-title" tabindex="-1" hidden>
-        <h2 id="pair-title">Connect a browser extension?</h2>
-        <p>Code: <strong id="pair-code" class="marker"></strong></p>
-        <p class="hint">Only approve this if the same code is shown in your LeakTrace extension's Settings right now. The extension will be able to create and look up your aliases and record consent receipts for a few hours; you can revoke it in Settings.</p>
-        <div class="row">
-          <button type="button" id="pair-approve">Approve</button>
-          <button type="button" id="pair-cancel" class="secondary">Cancel</button>
         </div>
-        <p id="pair-status" class="status" aria-live="polite"></p>
-      </section>
-
-      <section id="notifications" class="notifications" aria-label="New email notifications" hidden>
-        <div class="row">
-          <h2 class="sr-only">Notifications</h2>
-          <ul id="notification-list" class="plain-list" aria-live="polite"></ul>
-          <button type="button" id="notifications-dismiss" class="secondary">Dismiss</button>
+        <div class="field">
+          <label for="register-password">Password</label>
+          <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="12" required aria-describedby="register-password-hint">
+          <p id="register-password-hint" class="hint">At least 12 characters.</p>
         </div>
-      </section>
-
-      <nav class="tabs" role="tablist" aria-label="Dashboard sections">
-        <button role="tab" id="tab-overview" aria-controls="view-overview" aria-selected="true">Overview</button>
-        <button role="tab" id="tab-websites" aria-controls="view-websites" aria-selected="false" tabindex="-1">Websites &amp; aliases</button>
-        <button role="tab" id="tab-inbox" aria-controls="view-inbox" aria-selected="false" tabindex="-1">Inbox <span id="unread-badge" class="count" hidden></span></button>
-        <button role="tab" id="tab-receipts" aria-controls="view-receipts" aria-selected="false" tabindex="-1">Consent receipts</button>
-        <button role="tab" id="tab-activity" aria-controls="view-activity" aria-selected="false" tabindex="-1">Leak activity</button>
-        <button role="tab" id="tab-check" aria-controls="view-check" aria-selected="false" tabindex="-1">Match check</button>
-        <button role="tab" id="tab-settings" aria-controls="view-settings" aria-selected="false" tabindex="-1">Settings</button>
-      </nav>
-
-      <section id="view-overview" role="tabpanel" aria-labelledby="tab-overview">
-        <h2>Overview</h2>
-        <p class="notice" role="note">A match links a message to one of your signups. It is not proof that a site leaked, sold or shared your data.</p>
-        <div class="status" data-status aria-live="polite"></div>
-        <dl class="cards cards-primary" id="overview-cards"></dl>
-        <h3>Matching and records</h3>
-        <dl class="cards" id="overview-more"></dl>
-        <div class="section-head">
-          <h3 id="recent-title">Recent email</h3>
-          <button type="button" id="recent-open-inbox" class="secondary">Open inbox</button>
-        </div>
-        <p id="recent-status" class="status" aria-live="polite"></p>
-        <ul id="recent-list" class="inbox" aria-labelledby="recent-title"></ul>
-      </section>
-
-      <section id="view-websites" role="tabpanel" aria-labelledby="tab-websites" hidden>
-        <h2>Websites &amp; aliases</h2>
-        <form id="websites-search" class="filters" role="search">
-          <label for="websites-q">Search</label>
-          <input id="websites-q" name="q" type="search" maxlength="100" placeholder="Site, domain, alias or nickname">
-          <label for="websites-filter">Show</label>
-          <select id="websites-filter" name="filter">
-            <option value="all">All websites</option>
-            <option value="with_receipts">With consent receipts</option>
-            <option value="with_emails">With received email</option>
-            <option value="real_name">Real name required</option>
-          </select>
-          <button type="submit">Search</button>
-        </form>
-        <div class="status" data-status aria-live="polite"></div>
-        <div class="table-wrap">
-          <table>
-            <caption class="sr-only">Your websites, newest first</caption>
-            <thead><tr>
-              <th scope="col">Website</th><th scope="col">Alias</th><th scope="col">Nickname</th>
-              <th scope="col">Signed up</th><th scope="col">Receipts</th><th scope="col">Emails</th>
-              <th scope="col"><span class="sr-only">Actions</span></th>
-            </tr></thead>
-            <tbody id="websites-body"></tbody>
-          </table>
-        </div>
-        <div class="pager" data-pager="websites"></div>
-        <section id="website-detail" class="detail" aria-labelledby="website-detail-title" tabindex="-1" hidden>
-          <h3 id="website-detail-title">Website details</h3>
-          <div id="website-detail-body"></div>
-          <button type="button" id="website-detail-close">Close details</button>
-        </section>
-      </section>
-
-      <section id="view-inbox" role="tabpanel" aria-labelledby="tab-inbox" hidden>
-        <h2>Inbox</h2>
-        <p class="hint">Email delivered to your aliases. Each message is linked to a website only when it was sent to that website's exact alias. Message bodies and attachments are never received or stored.</p>
-        <div class="filters">
-          <div role="group" aria-label="Show" id="inbox-filters" class="segmented">
-            <button type="button" data-filter="all" aria-pressed="true">All</button>
-            <button type="button" data-filter="unread" aria-pressed="false">Unread</button>
-            <button type="button" data-filter="matched" aria-pressed="false">Matched</button>
-            <button type="button" data-filter="unmatched" aria-pressed="false">Unmatched</button>
-            <button type="button" data-filter="failed" aria-pressed="false">Failed</button>
-          </div>
-          <button type="button" id="inbox-read-all" class="secondary">Mark all as read</button>
-        </div>
-        <div class="status" data-status aria-live="polite"></div>
-        <button type="button" id="inbox-retry" class="secondary" hidden>Try again</button>
-        <ul id="inbox-list" class="inbox" aria-label="Messages, newest first"></ul>
-        <div class="pager" data-pager="inbox"></div>
-        <section id="inbox-detail" class="detail" aria-labelledby="inbox-detail-title" tabindex="-1" hidden>
-          <h3 id="inbox-detail-title">Message details</h3>
-          <div id="inbox-detail-body"></div>
-          <div class="row">
-            <button type="button" id="inbox-detail-unread" class="secondary">Mark as unread</button>
-            <button type="button" id="inbox-detail-close">Close details</button>
-          </div>
-        </section>
-        <p class="notice" role="note" id="inbox-notice">Sender names, addresses and subjects come from the message itself and can be forged.</p>
-      </section>
-
-      <section id="view-receipts" role="tabpanel" aria-labelledby="tab-receipts" hidden>
-        <h2>Consent receipts</h2>
-        <p class="notice" role="note">A receipt records what you reported. It does not prove that legally valid consent was given, that a site complied with data-protection law, or that a violation occurred.</p>
-        <p class="hint">Receipts are entered manually and are user-reported; LeakTrace verifies none of them and never fetches policy URLs.</p>
-        <div class="status" data-status aria-live="polite"></div>
-        <div class="table-wrap">
-          <table>
-            <caption class="sr-only">Consent receipts, newest first</caption>
-            <thead><tr>
-              <th scope="col">Recorded by LeakTrace</th><th scope="col">Site</th><th scope="col">Reported action</th>
-              <th scope="col">Source</th><th scope="col">Evidence kept</th><th scope="col"><span class="sr-only">Actions</span></th>
-            </tr></thead>
-            <tbody id="receipts-body"></tbody>
-          </table>
-        </div>
-        <div class="pager" data-pager="receipts"></div>
-        <section id="receipt-detail" class="detail" aria-labelledby="receipt-detail-title" tabindex="-1" hidden>
-          <h3 id="receipt-detail-title">Receipt details</h3>
-          <div id="receipt-detail-body"></div>
-          <button type="button" id="receipt-detail-close">Close details</button>
-        </section>
-
-        <h3>Record a receipt</h3>
-        <form id="receipt-form" class="check">
-          <label for="receipt-signup">Signup ID (see My websites)</label>
-          <input id="receipt-signup" name="signup_id" type="number" min="1" step="1" required>
-          <label for="receipt-action">What you did</label>
-          <select id="receipt-action" name="action" required>
-            <option value="accepted">Accepted</option>
-            <option value="declined">Declined</option>
-            <option value="notice_only">Only saw the notice</option>
-          </select>
-          <label for="receipt-url">Privacy notice URL (not fetched)</label>
-          <input id="receipt-url" name="source_url" type="url" maxlength="2048" autocomplete="off">
-          <label for="receipt-version">Notice version or date shown</label>
-          <input id="receipt-version" name="notice_version" type="text" maxlength="100" autocomplete="off">
-          <label for="receipt-notice">Notice text (optional)</label>
-          <textarea id="receipt-notice" name="notice_text" rows="4" maxlength="20000"></textarea>
-          <label class="inline"><input id="receipt-store-text" type="checkbox"> Also store the notice text (otherwise only its SHA-256 hash is kept)</label>
-          <label for="receipt-consent">Consent prompt wording (optional)</label>
-          <textarea id="receipt-consent" name="consent_text" rows="2" maxlength="2000"></textarea>
-          <label for="receipt-occurred">When it happened, if you know (your local time)</label>
-          <input id="receipt-occurred" name="reported_occurred_at" type="datetime-local">
-          <button type="submit">Save receipt</button>
-        </form>
-        <div id="receipt-form-status" class="status" aria-live="polite"></div>
-      </section>
-
-      <section id="view-activity" role="tabpanel" aria-labelledby="tab-activity" hidden>
-        <h2>Leak activity</h2>
-        <p class="hint">Email received at your aliases. Message bodies, subjects and full sender addresses are never stored or shown. Sender domains are claims and can be forged.</p>
-        <label for="email-status">Filter by match status</label>
-        <select id="email-status">
-          <option value="">All</option>
-          <option value="matched">Matched</option>
-          <option value="ambiguous">Ambiguous</option>
-          <option value="no_match">No match</option>
-          <option value="unprocessed">Unprocessed</option>
-        </select>
-        <div class="status" data-status aria-live="polite"></div>
-        <div class="table-wrap">
-          <table>
-            <caption class="sr-only">Received email, newest first</caption>
-            <thead><tr>
-              <th scope="col">Received</th><th scope="col">Status</th><th scope="col">Confidence</th>
-              <th scope="col">Website</th><th scope="col">Sender domain</th><th scope="col"><span class="sr-only">Actions</span></th>
-            </tr></thead>
-            <tbody id="emails-body"></tbody>
-          </table>
-        </div>
-        <div class="pager" data-pager="emails"></div>
-        <section id="email-detail" class="detail" aria-labelledby="email-detail-title" tabindex="-1" hidden>
-          <h3 id="email-detail-title">Match details</h3>
-          <div id="email-detail-body"></div>
-          <button type="button" id="email-detail-close">Close details</button>
-        </section>
-
-        <h3>Investigations you recorded</h3>
-        <p class="hint">Saved results of the matcher (Match check with “record” enabled). A result is never a confirmed leak.</p>
-        <div id="investigations-status" class="status" aria-live="polite"></div>
-        <div class="table-wrap">
-          <table>
-            <caption class="sr-only">Recorded investigations, newest first</caption>
-            <thead><tr>
-              <th scope="col">Recorded</th><th scope="col">Result</th><th scope="col">Confidence</th>
-              <th scope="col">Website</th><th scope="col">Signals</th><th scope="col">Sender domain</th>
-            </tr></thead>
-            <tbody id="investigations-body"></tbody>
-          </table>
-        </div>
-        <div class="pager" data-pager="investigations"></div>
-      </section>
-
-      <section id="view-check" role="tabpanel" aria-labelledby="tab-check" hidden>
-        <h2>Match check</h2>
-        <p class="hint">Runs the matcher on clues you enter, against your own signups.</p>
-        <form id="check-form" class="check">
-          <label for="check-recipient">Recipient address</label>
-          <input id="check-recipient" name="recipient" type="email" autocomplete="off">
-          <label for="check-sender">Sender address</label>
-          <input id="check-sender" name="sender" type="email" autocomplete="off">
-          <label for="check-subject">Subject</label>
-          <input id="check-subject" name="subject" type="text" maxlength="998" autocomplete="off">
-          <label for="check-nickname">Nickname the message used</label>
-          <input id="check-nickname" name="nickname" type="text" maxlength="100" autocomplete="off">
-          <label for="check-surname">Surname the message used</label>
-          <input id="check-surname" name="surname_variant" type="text" maxlength="100" autocomplete="off">
-          <label class="inline"><input id="check-record" type="checkbox"> Record the result as an investigation</label>
-          <button type="submit">Check</button>
-        </form>
-        <div id="check-status" class="status" data-status aria-live="polite"></div>
-        <div id="check-result"></div>
-      </section>
-
-      <section id="view-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
-        <h2>Settings</h2>
-        <div class="status" data-status aria-live="polite"></div>
-
-        <h3>Account</h3>
-        <dl id="account-details" class="details"></dl>
-        <button type="button" id="resend-verification" class="secondary" hidden>Send verification email</button>
-        <p id="verification-status" class="status" aria-live="polite"></p>
-
-        <h3>Change password</h3>
-        <form id="password-form" class="check">
-          <label for="current-password">Current password</label>
-          <input id="current-password" name="current_password" type="password" autocomplete="current-password" required>
-          <label for="new-password">New password (at least 12 characters)</label>
-          <input id="new-password" name="new_password" type="password" autocomplete="new-password" minlength="12" required>
-          <button type="submit">Change password</button>
-          <p class="hint">Changing your password signs out your other sessions and disconnects your browser extensions.</p>
-        </form>
-        <p id="password-status" class="status" aria-live="polite"></p>
-
-        <h3>Connected browser extensions</h3>
-        <p id="extensions-status" class="status" aria-live="polite"></p>
-        <ul id="extensions-list" class="plain-list"></ul>
-
-        <h3>Privacy</h3>
-        <p class="hint">Records you create are visible only to your account. Records from before accounts existed are not linked to anyone and are not shown here. LeakTrace sends no analytics.</p>
-
-        <h3>Delete account</h3>
-        <form id="delete-form" class="check danger">
-          <p>This permanently deletes your account and everything it owns: websites, aliases, consent receipts, received-email records and investigations. It cannot be undone.</p>
-          <label for="delete-password">Password</label>
-          <input id="delete-password" name="password" type="password" autocomplete="current-password" required>
-          <label for="delete-confirm">Type DELETE to confirm</label>
-          <input id="delete-confirm" name="confirm" type="text" autocomplete="off" required>
-          <button type="submit" class="danger-button">Delete my account</button>
-        </form>
-        <p id="delete-status" class="status" aria-live="polite"></p>
-      </section>
+        <button type="submit" class="btn btn-secondary btn-block">Create account</button>
+        <p id="register-status" class="status" aria-live="polite"></p>
+      </form>
     </div>
-  </main>
+  </section>
+
+  <!-- Signed in -->
+  <div id="app-view" class="shell" hidden>
+    <div id="nav-scrim" class="scrim" hidden></div>
+    <aside id="sidebar" class="sidebar" aria-label="Main navigation">
+      <div class="sidebar-head">
+        <div class="brand"><svg class="brand-mark" aria-hidden="true"><use href="#i-logo"></use></svg><span>LeakTrace</span></div>
+        <button type="button" id="nav-close" class="icon-btn only-mobile" aria-label="Close navigation"><svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg></button>
+      </div>
+      <nav class="nav" role="tablist" aria-label="Dashboard sections" aria-orientation="vertical">
+        <button role="tab" id="tab-overview" aria-controls="view-overview" aria-selected="true"><svg class="icon" aria-hidden="true"><use href="#i-overview"></use></svg><span>Overview</span></button>
+        <button role="tab" id="tab-websites" aria-controls="view-websites" aria-selected="false" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-at"></use></svg><span>Websites &amp; aliases</span></button>
+        <button role="tab" id="tab-inbox" aria-controls="view-inbox" aria-selected="false" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-inbox"></use></svg><span>Inbox</span> <span id="unread-badge" class="count" hidden></span></button>
+        <button role="tab" id="tab-sms" aria-controls="view-sms" aria-selected="false" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-sms"></use></svg><span>SMS analyzer</span></button>
+        <button role="tab" id="tab-receipts" aria-controls="view-receipts" aria-selected="false" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-receipt"></use></svg><span>Consent receipts</span></button>
+        <button role="tab" id="tab-activity" aria-controls="view-activity" aria-selected="false" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-activity"></use></svg><span>Leak activity</span></button>
+        <button role="tab" id="tab-check" aria-controls="view-check" aria-selected="false" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg><span>Match check</span></button>
+        <button role="tab" id="tab-settings" aria-controls="view-settings" aria-selected="false" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-settings"></use></svg><span>Settings</span></button>
+      </nav>
+      <div class="sidebar-foot">
+        <p class="local-note"><svg class="icon" aria-hidden="true"><use href="#i-lock"></use></svg><span><strong>Local development only.</strong> This dashboard only answers requests from this computer. Do not expose it publicly.</span></p>
+      </div>
+    </aside>
+
+    <div class="main-col">
+      <header class="topbar">
+        <button type="button" id="nav-open" class="icon-btn only-mobile" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-menu"></use></svg></button>
+        <p id="topbar-title" class="topbar-title" aria-hidden="true">Overview</p>
+        <div class="topbar-actions">
+          <button type="button" id="theme-toggle" class="icon-btn" aria-label="Switch to light theme" title="Switch to light theme"><svg class="icon" aria-hidden="true"><use href="#i-sun"></use></svg></button>
+          <div id="account-bar" class="account-bar" hidden>
+            <span class="avatar" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="#i-user"></use></svg></span>
+            <span id="account-email" class="account-email"></span>
+            <button type="button" id="sign-out" class="btn btn-ghost btn-sm"><svg class="icon" aria-hidden="true"><use href="#i-logout"></use></svg><span>Sign out</span></button>
+          </div>
+        </div>
+      </header>
+
+      <div class="page-notices">
+        <p id="verify-banner" class="notice" role="note" hidden></p>
+
+        <section id="pair-card" class="detail pair-card" aria-labelledby="pair-title" tabindex="-1" hidden>
+          <div class="card-title-row">
+            <svg class="icon icon-lg" aria-hidden="true"><use href="#i-puzzle"></use></svg>
+            <h2 id="pair-title">Connect a browser extension?</h2>
+          </div>
+          <p>Code: <strong id="pair-code" class="marker code-lg"></strong></p>
+          <p class="hint">Only approve this if the same code is shown in your LeakTrace extension's Settings right now. The extension will be able to create and look up your aliases and record consent receipts for a few hours; you can revoke it in Settings.</p>
+          <div class="row">
+            <button type="button" id="pair-approve" class="btn btn-primary">Approve</button>
+            <button type="button" id="pair-cancel" class="btn btn-secondary">Cancel</button>
+          </div>
+          <p id="pair-status" class="status" aria-live="polite"></p>
+        </section>
+
+        <section id="notifications" class="notifications" aria-label="New email notifications" hidden>
+          <svg class="icon notif-icon" aria-hidden="true"><use href="#i-mail"></use></svg>
+          <div class="notif-body">
+            <h2 class="sr-only">Notifications</h2>
+            <ul id="notification-list" class="plain-list" aria-live="polite"></ul>
+          </div>
+          <button type="button" id="notifications-dismiss" class="btn btn-ghost btn-sm">Dismiss</button>
+        </section>
+      </div>
+
+      <main id="main" class="content">
+        <section id="view-overview" role="tabpanel" aria-labelledby="tab-overview">
+          <header class="page-head">
+            <div>
+              <h2>Overview</h2>
+              <p class="page-desc">Your websites, aliases and the email they receive.</p>
+            </div>
+            <button type="button" id="recent-open-inbox" class="btn btn-secondary"><svg class="icon" aria-hidden="true"><use href="#i-inbox"></use></svg><span>Open inbox</span></button>
+          </header>
+          <div class="status" data-status aria-live="polite"></div>
+          <dl class="cards cards-primary" id="overview-cards"></dl>
+
+          <div class="grid-2">
+            <section class="card panel" aria-labelledby="chart-title">
+              <div class="panel-head">
+                <h3 id="chart-title">Email received</h3>
+                <span class="panel-meta">Last 14 days · UTC</span>
+              </div>
+              <div id="email-chart" class="chart-box"></div>
+              <p id="email-chart-note" class="hint chart-note"></p>
+            </section>
+            <section class="card panel" aria-labelledby="match-title">
+              <div class="panel-head">
+                <h3 id="match-title">Match results</h3>
+                <span class="panel-meta">All email</span>
+              </div>
+              <div id="match-breakdown" class="breakdown"></div>
+              <p class="hint">A match links a message to one of your signups. It is not proof that a site leaked, sold or shared your data.</p>
+            </section>
+          </div>
+
+          <section class="card panel" aria-labelledby="recent-title">
+            <div class="panel-head">
+              <h3 id="recent-title">Recent email</h3>
+              <span class="panel-meta">Newest first</span>
+            </div>
+            <p id="recent-status" class="status" aria-live="polite"></p>
+            <ul id="recent-list" class="inbox" aria-labelledby="recent-title"></ul>
+          </section>
+
+          <section class="card panel" aria-labelledby="records-title">
+            <div class="panel-head"><h3 id="records-title">Records</h3></div>
+            <dl class="cards cards-compact" id="overview-more"></dl>
+          </section>
+        </section>
+
+        <section id="view-websites" role="tabpanel" aria-labelledby="tab-websites" hidden>
+          <header class="page-head">
+            <div>
+              <h2>Websites &amp; aliases</h2>
+              <p class="page-desc">Each website gets its own alias and nickname, so email sent to it can be traced back.</p>
+            </div>
+            <button type="button" id="new-alias" class="btn btn-primary"><svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg><span>New alias</span></button>
+          </header>
+          <form id="websites-search" class="toolbar" role="search">
+            <div class="search-field">
+              <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
+              <label for="websites-q" class="sr-only">Search</label>
+              <input id="websites-q" name="q" type="search" maxlength="100" placeholder="Search site, domain, alias or nickname">
+            </div>
+            <label for="websites-filter" class="sr-only">Show</label>
+            <select id="websites-filter" name="filter">
+              <option value="all">All websites</option>
+              <option value="with_receipts">With consent receipts</option>
+              <option value="with_emails">With received email</option>
+              <option value="real_name">Real name required</option>
+            </select>
+            <button type="submit" class="btn btn-secondary">Search</button>
+          </form>
+          <div class="status" data-status aria-live="polite"></div>
+          <div class="table-wrap">
+            <table class="table">
+              <caption class="sr-only">Your websites, newest first</caption>
+              <thead><tr>
+                <th scope="col">Website</th><th scope="col">Alias</th><th scope="col">Nickname</th>
+                <th scope="col">Signed up</th><th scope="col" class="num">Receipts</th><th scope="col" class="num">Emails</th>
+                <th scope="col"><span class="sr-only">Actions</span></th>
+              </tr></thead>
+              <tbody id="websites-body"></tbody>
+            </table>
+          </div>
+          <div class="pager" data-pager="websites"></div>
+          <section id="website-detail" class="detail" aria-labelledby="website-detail-title" tabindex="-1" hidden>
+            <div class="detail-head">
+              <h3 id="website-detail-title">Website details</h3>
+              <button type="button" id="website-detail-close" class="btn btn-ghost btn-sm">Close details</button>
+            </div>
+            <div id="website-detail-body"></div>
+          </section>
+        </section>
+
+        <section id="view-inbox" role="tabpanel" aria-labelledby="tab-inbox" hidden>
+          <header class="page-head">
+            <div>
+              <h2>Inbox</h2>
+              <p class="page-desc">Email delivered to your aliases. Each message is linked to a website only when it was sent to that website's exact alias. Message bodies and attachments are never received or stored.</p>
+            </div>
+            <button type="button" id="inbox-read-all" class="btn btn-secondary"><svg class="icon" aria-hidden="true"><use href="#i-check"></use></svg><span>Mark all as read</span></button>
+          </header>
+          <div class="toolbar">
+            <div role="group" aria-label="Show" id="inbox-filters" class="segmented">
+              <button type="button" data-filter="all" aria-pressed="true">All</button>
+              <button type="button" data-filter="unread" aria-pressed="false">Unread</button>
+              <button type="button" data-filter="matched" aria-pressed="false">Matched</button>
+              <button type="button" data-filter="unmatched" aria-pressed="false">Unmatched</button>
+              <button type="button" data-filter="failed" aria-pressed="false">Failed</button>
+            </div>
+          </div>
+          <div class="status" data-status aria-live="polite"></div>
+          <button type="button" id="inbox-retry" class="btn btn-secondary" hidden><svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg><span>Try again</span></button>
+          <ul id="inbox-list" class="inbox" aria-label="Messages, newest first"></ul>
+          <div class="pager" data-pager="inbox"></div>
+          <section id="inbox-detail" class="detail" aria-labelledby="inbox-detail-title" tabindex="-1" hidden>
+            <div class="detail-head">
+              <h3 id="inbox-detail-title">Message details</h3>
+              <div class="row">
+                <button type="button" id="inbox-detail-unread" class="btn btn-secondary btn-sm">Mark as unread</button>
+                <button type="button" id="inbox-detail-close" class="btn btn-ghost btn-sm">Close details</button>
+              </div>
+            </div>
+            <div id="inbox-detail-body"></div>
+          </section>
+          <p class="notice" role="note" id="inbox-notice">Sender names, addresses and subjects come from the message itself and can be forged.</p>
+        </section>
+
+        <section id="view-sms" role="tabpanel" aria-labelledby="tab-sms" hidden>
+          <header class="page-head">
+            <div>
+              <h2>SMS analyzer</h2>
+              <p class="page-desc">Paste a text message to see which personal details it contains and which website or service it may relate to. Nothing is read from your phone, and links are never opened.</p>
+            </div>
+          </header>
+          <div class="sms-layout">
+            <section class="card panel" aria-labelledby="sms-form-title">
+              <div class="panel-head">
+                <h3 id="sms-form-title">Message</h3>
+                <label for="sms-sample" class="sr-only">Load a fictional sample</label>
+                <select id="sms-sample">
+                  <option value="">Load a fictional sample…</option>
+                  <option value="clinic">Clinic appointment</option>
+                  <option value="otp">Verification code and reset link</option>
+                  <option value="parcel">Delivery with a shortened link</option>
+                  <option value="none">No identifiable source</option>
+                </select>
+              </div>
+              <form id="sms-form" class="form" novalidate>
+                <div class="field">
+                  <label for="sms-text">Message text</label>
+                  <textarea id="sms-text" name="text" rows="6" maxlength="2000" required aria-describedby="sms-count"></textarea>
+                  <p id="sms-count" class="hint counter">0 / 2000 characters</p>
+                </div>
+                <div class="form-grid">
+                  <div class="field">
+                    <label for="sms-sender">Sender (optional)</label>
+                    <input id="sms-sender" name="sender" type="text" maxlength="64" autocomplete="off" placeholder="+44 7700 900123 or SENDERID">
+                  </div>
+                  <div class="field">
+                    <label for="sms-received">Received (optional, your local time)</label>
+                    <input id="sms-received" name="received_at" type="datetime-local">
+                  </div>
+                  <div class="field span-2">
+                    <label for="sms-label">Where you received it (optional)</label>
+                    <input id="sms-label" name="label" type="text" maxlength="100" autocomplete="off" placeholder="e.g. personal phone">
+                  </div>
+                </div>
+                <div class="form-actions">
+                  <button type="submit" id="sms-analyze" class="btn btn-primary"><svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg><span>Analyze message</span></button>
+                  <button type="button" id="sms-clear" class="btn btn-secondary">Clear</button>
+                </div>
+              </form>
+              <p class="notice" role="note">Analysis happens on your LeakTrace server and stores nothing. If you choose to save an investigation, LeakTrace keeps the sender, the services and domains found, the suggested sources and your decisions. Email addresses, phone numbers and names from the message are not kept, and the message text is kept only if you ask, with codes, card numbers and sensitive links removed.</p>
+            </section>
+            <section class="card panel sms-result-panel" aria-labelledby="sms-result-title" aria-live="polite">
+              <div class="panel-head"><h3 id="sms-result-title">Investigation</h3></div>
+              <div class="status" data-status aria-live="polite"></div>
+              <div id="sms-result">
+                <div class="empty"><svg class="icon icon-xl" aria-hidden="true"><use href="#i-sms"></use></svg><p class="empty-title">No message analysed yet</p><p class="hint">Paste a message, or load a fictional sample, and select Analyze message.</p></div>
+              </div>
+            </section>
+          </div>
+
+          <div class="grid-2">
+            <section class="card panel" aria-labelledby="sms-history-title">
+              <div class="panel-head"><h3 id="sms-history-title">Saved SMS investigations</h3><span class="panel-meta">Newest first</span></div>
+              <p id="sms-history-status" class="status" aria-live="polite"></p>
+              <ul id="sms-history" class="plain-list list-rows"></ul>
+              <div class="pager" data-pager="sms"></div>
+            </section>
+            <section class="card panel" aria-labelledby="timeline-title">
+              <div class="panel-head"><h3 id="timeline-title">Email and SMS timeline</h3><span class="panel-meta">Newest first</span></div>
+              <p class="hint">Records are linked to a website only by an exact alias or by your own confirmation, never because they mention the same company.</p>
+              <p id="timeline-status" class="status" aria-live="polite"></p>
+              <ol id="timeline-list" class="timeline"></ol>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-receipts" role="tabpanel" aria-labelledby="tab-receipts" hidden>
+          <header class="page-head">
+            <div>
+              <h2>Consent receipts</h2>
+              <p class="page-desc">Receipts are entered manually and are user-reported; LeakTrace verifies none of them and never fetches policy URLs.</p>
+            </div>
+          </header>
+          <p class="notice" role="note">A receipt records what you reported. It does not prove that legally valid consent was given, that a site complied with data-protection law, or that a violation occurred.</p>
+          <div class="status" data-status aria-live="polite"></div>
+          <div class="table-wrap">
+            <table class="table">
+              <caption class="sr-only">Consent receipts, newest first</caption>
+              <thead><tr>
+                <th scope="col">Recorded by LeakTrace</th><th scope="col">Site</th><th scope="col">Reported action</th>
+                <th scope="col">Source</th><th scope="col">Evidence kept</th><th scope="col"><span class="sr-only">Actions</span></th>
+              </tr></thead>
+              <tbody id="receipts-body"></tbody>
+            </table>
+          </div>
+          <div class="pager" data-pager="receipts"></div>
+          <section id="receipt-detail" class="detail" aria-labelledby="receipt-detail-title" tabindex="-1" hidden>
+            <div class="detail-head">
+              <h3 id="receipt-detail-title">Receipt details</h3>
+              <button type="button" id="receipt-detail-close" class="btn btn-ghost btn-sm">Close details</button>
+            </div>
+            <div id="receipt-detail-body"></div>
+          </section>
+
+          <section class="card panel" aria-labelledby="receipt-form-title">
+            <div class="panel-head"><h3 id="receipt-form-title">Record a receipt</h3></div>
+            <form id="receipt-form" class="form form-grid" novalidate>
+              <div class="field">
+                <label for="receipt-signup">Signup ID (see Websites &amp; aliases)</label>
+                <input id="receipt-signup" name="signup_id" type="number" min="1" step="1" required>
+              </div>
+              <div class="field">
+                <label for="receipt-action">What you did</label>
+                <select id="receipt-action" name="action" required>
+                  <option value="accepted">Accepted</option>
+                  <option value="declined">Declined</option>
+                  <option value="notice_only">Only saw the notice</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="receipt-url">Privacy notice URL (not fetched)</label>
+                <input id="receipt-url" name="source_url" type="url" maxlength="2048" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="receipt-version">Notice version or date shown</label>
+                <input id="receipt-version" name="notice_version" type="text" maxlength="100" autocomplete="off">
+              </div>
+              <div class="field span-2">
+                <label for="receipt-notice">Notice text (optional)</label>
+                <textarea id="receipt-notice" name="notice_text" rows="4" maxlength="20000"></textarea>
+                <label class="check-label"><input id="receipt-store-text" type="checkbox"> Also store the notice text (otherwise only its SHA-256 hash is kept)</label>
+              </div>
+              <div class="field span-2">
+                <label for="receipt-consent">Consent prompt wording (optional)</label>
+                <textarea id="receipt-consent" name="consent_text" rows="2" maxlength="2000"></textarea>
+              </div>
+              <div class="field">
+                <label for="receipt-occurred">When it happened, if you know (your local time)</label>
+                <input id="receipt-occurred" name="reported_occurred_at" type="datetime-local">
+              </div>
+              <div class="form-actions span-2">
+                <button type="submit" class="btn btn-primary">Save receipt</button>
+              </div>
+            </form>
+            <div id="receipt-form-status" class="status" aria-live="polite"></div>
+          </section>
+        </section>
+
+        <section id="view-activity" role="tabpanel" aria-labelledby="tab-activity" hidden>
+          <header class="page-head">
+            <div>
+              <h2>Leak activity</h2>
+              <p class="page-desc">Email received at your aliases. Message bodies, subjects and full sender addresses are never stored or shown. Sender domains are claims and can be forged.</p>
+            </div>
+          </header>
+          <div class="toolbar">
+            <label for="email-status">Filter by match status</label>
+            <select id="email-status">
+              <option value="">All</option>
+              <option value="matched">Matched</option>
+              <option value="ambiguous">Ambiguous</option>
+              <option value="no_match">No match</option>
+              <option value="unprocessed">Unprocessed</option>
+            </select>
+          </div>
+          <div class="status" data-status aria-live="polite"></div>
+          <div class="table-wrap">
+            <table class="table">
+              <caption class="sr-only">Received email, newest first</caption>
+              <thead><tr>
+                <th scope="col">Received</th><th scope="col">Status</th><th scope="col">Confidence</th>
+                <th scope="col">Website</th><th scope="col">Sender domain</th><th scope="col"><span class="sr-only">Actions</span></th>
+              </tr></thead>
+              <tbody id="emails-body"></tbody>
+            </table>
+          </div>
+          <div class="pager" data-pager="emails"></div>
+          <section id="email-detail" class="detail" aria-labelledby="email-detail-title" tabindex="-1" hidden>
+            <div class="detail-head">
+              <h3 id="email-detail-title">Match details</h3>
+              <button type="button" id="email-detail-close" class="btn btn-ghost btn-sm">Close details</button>
+            </div>
+            <div id="email-detail-body"></div>
+          </section>
+
+          <section class="card panel" aria-labelledby="investigations-title">
+            <div class="panel-head">
+              <h3 id="investigations-title">Investigations you recorded</h3>
+            </div>
+            <p class="hint">Saved results of the matcher (Match check with “record” enabled). A result is never a confirmed leak.</p>
+            <div id="investigations-status" class="status" aria-live="polite"></div>
+            <div class="table-wrap">
+              <table class="table">
+                <caption class="sr-only">Recorded investigations, newest first</caption>
+                <thead><tr>
+                  <th scope="col">Recorded</th><th scope="col">Channel</th><th scope="col">Result</th><th scope="col">Confidence</th>
+                  <th scope="col">Website</th><th scope="col">Signals</th><th scope="col">Sender domain</th>
+                </tr></thead>
+                <tbody id="investigations-body"></tbody>
+              </table>
+            </div>
+            <div class="pager" data-pager="investigations"></div>
+          </section>
+        </section>
+
+        <section id="view-check" role="tabpanel" aria-labelledby="tab-check" hidden>
+          <header class="page-head">
+            <div>
+              <h2>Match check</h2>
+              <p class="page-desc">Runs the matcher on clues you enter, against your own signups.</p>
+            </div>
+          </header>
+          <div class="grid-2 grid-check">
+            <section class="card panel" aria-label="Clues">
+              <form id="check-form" class="form" novalidate>
+                <div class="field">
+                  <label for="check-recipient">Recipient address</label>
+                  <input id="check-recipient" name="recipient" type="email" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="check-sender">Sender address</label>
+                  <input id="check-sender" name="sender" type="email" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="check-subject">Subject</label>
+                  <input id="check-subject" name="subject" type="text" maxlength="998" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="check-nickname">Nickname the message used</label>
+                  <input id="check-nickname" name="nickname" type="text" maxlength="100" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="check-surname">Surname the message used</label>
+                  <input id="check-surname" name="surname_variant" type="text" maxlength="100" autocomplete="off">
+                </div>
+                <label class="check-label"><input id="check-record" type="checkbox"> Record the result as an investigation</label>
+                <div class="form-actions"><button type="submit" class="btn btn-primary"><svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg><span>Check</span></button></div>
+              </form>
+            </section>
+            <section class="card panel" aria-label="Result">
+              <div id="check-status" class="status" data-status aria-live="polite"></div>
+              <div id="check-result" class="check-result">
+                <div class="empty"><svg class="icon icon-xl" aria-hidden="true"><use href="#i-search"></use></svg><p class="empty-title">No check run yet</p><p class="hint">Enter at least one clue and select Check.</p></div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+          <header class="page-head">
+            <div>
+              <h2>Settings</h2>
+              <p class="page-desc">Your account, connected extensions and privacy.</p>
+            </div>
+          </header>
+          <div class="status" data-status aria-live="polite"></div>
+
+          <div class="settings">
+            <section class="card panel" aria-labelledby="settings-account">
+              <div class="panel-head"><h3 id="settings-account">Account</h3></div>
+              <dl id="account-details" class="details"></dl>
+              <button type="button" id="resend-verification" class="btn btn-secondary btn-sm" hidden>Send verification email</button>
+              <p id="verification-status" class="status" aria-live="polite"></p>
+            </section>
+
+            <section class="card panel" aria-labelledby="settings-appearance">
+              <div class="panel-head"><h3 id="settings-appearance">Appearance</h3></div>
+              <div role="group" aria-label="Theme" id="theme-options" class="segmented">
+                <button type="button" data-theme-choice="dark" aria-pressed="true"><svg class="icon" aria-hidden="true"><use href="#i-moon"></use></svg><span>Dark</span></button>
+                <button type="button" data-theme-choice="light" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-sun"></use></svg><span>Light</span></button>
+              </div>
+              <p class="hint">Saved in this browser only.</p>
+            </section>
+
+            <section class="card panel" aria-labelledby="settings-password">
+              <div class="panel-head"><h3 id="settings-password">Change password</h3></div>
+              <form id="password-form" class="form" novalidate>
+                <div class="field">
+                  <label for="current-password">Current password</label>
+                  <input id="current-password" name="current_password" type="password" autocomplete="current-password" required>
+                </div>
+                <div class="field">
+                  <label for="new-password">New password (at least 12 characters)</label>
+                  <input id="new-password" name="new_password" type="password" autocomplete="new-password" minlength="12" required>
+                </div>
+                <p class="hint">Changing your password signs out your other sessions and disconnects your browser extensions.</p>
+                <div class="form-actions"><button type="submit" class="btn btn-primary">Change password</button></div>
+              </form>
+              <p id="password-status" class="status" aria-live="polite"></p>
+            </section>
+
+            <section class="card panel" aria-labelledby="settings-extensions">
+              <div class="panel-head"><h3 id="settings-extensions">Connected browser extensions</h3></div>
+              <p id="extensions-status" class="status" aria-live="polite"></p>
+              <ul id="extensions-list" class="plain-list list-rows"></ul>
+            </section>
+
+            <section class="card panel" aria-labelledby="settings-privacy">
+              <div class="panel-head"><h3 id="settings-privacy">Privacy</h3></div>
+              <p class="hint">Records you create are visible only to your account. Records from before accounts existed are not linked to anyone and are not shown here. LeakTrace sends no analytics.</p>
+            </section>
+
+            <section class="card panel danger-zone" aria-labelledby="settings-delete">
+              <div class="panel-head"><h3 id="settings-delete">Delete account</h3></div>
+              <form id="delete-form" class="form danger" novalidate>
+                <p>This permanently deletes your account and everything it owns: websites, aliases, consent receipts, received-email records and investigations. It cannot be undone.</p>
+                <div class="field">
+                  <label for="delete-password">Password</label>
+                  <input id="delete-password" name="password" type="password" autocomplete="current-password" required>
+                </div>
+                <div class="field">
+                  <label for="delete-confirm">Type DELETE to confirm</label>
+                  <input id="delete-confirm" name="confirm" type="text" autocomplete="off" required>
+                </div>
+                <div class="form-actions"><button type="submit" class="btn btn-danger danger-button">Delete my account</button></div>
+              </form>
+              <p id="delete-status" class="status" aria-live="polite"></p>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- New alias -->
+  <dialog id="alias-dialog" class="dialog" aria-labelledby="alias-dialog-title">
+    <form id="alias-form" class="form" novalidate>
+      <div class="dialog-head">
+        <h2 id="alias-dialog-title">New alias</h2>
+        <button type="button" class="icon-btn" data-close-dialog aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg></button>
+      </div>
+      <p class="hint">LeakTrace generates an alias and a nickname to use when you sign up for this website. Your real name is never asked for or stored.</p>
+      <div class="field">
+        <label for="alias-site-name">Website name</label>
+        <input id="alias-site-name" name="site_name" type="text" maxlength="255" required autocomplete="off" placeholder="Example Shop">
+      </div>
+      <div class="field">
+        <label for="alias-site-domain">Website domain (optional)</label>
+        <input id="alias-site-domain" name="site_domain" type="text" maxlength="253" autocomplete="off" placeholder="shop.example.com">
+      </div>
+      <div class="field">
+        <label for="alias-surname">Surname variant to give this site (optional)</label>
+        <input id="alias-surname" name="surname_variant" type="text" maxlength="100" autocomplete="off">
+      </div>
+      <label class="check-label"><input id="alias-real-name" name="real_name_required" type="checkbox"> This site requires my real name (no nickname is generated)</label>
+      <p id="alias-status" class="status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-secondary" data-close-dialog>Cancel</button>
+        <button type="submit" id="alias-submit" class="btn btn-primary">Create alias</button>
+      </div>
+    </form>
+    <div id="alias-created" class="alias-created" hidden>
+      <div class="dialog-head">
+        <h2 id="alias-created-title">Alias created</h2>
+        <button type="button" class="icon-btn" data-close-dialog aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg></button>
+      </div>
+      <div id="alias-created-body"></div>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-primary" data-close-dialog>Done</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Confirmation -->
+  <dialog id="confirm-dialog" class="dialog dialog-sm" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+    <div class="dialog-head">
+      <h2 id="confirm-title"></h2>
+    </div>
+    <p id="confirm-body"></p>
+    <div class="dialog-actions">
+      <button type="button" id="confirm-cancel" class="btn btn-secondary">Cancel</button>
+      <button type="button" id="confirm-ok" class="btn btn-danger"></button>
+    </div>
+  </dialog>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 </body>
 </html>

@@ -92,6 +92,13 @@ class SignupReceipt(BaseModel):
     source_url: str | None
 
 
+class SignupSms(BaseModel):
+    id: int
+    created_at: datetime
+    status: str | None
+    confirmed: bool = Field(description="You confirmed this message relates to this website.")
+
+
 class SignupDetailResponse(BaseModel):
     id: int
     site_name: str
@@ -104,6 +111,7 @@ class SignupDetailResponse(BaseModel):
     created_at: datetime
     receipts: list[SignupReceipt] = Field(description="Most recent 20.")
     emails: list[DashboardEmail] = Field(description="Most recent 20.")
+    sms_investigations: list[SignupSms] = Field(default_factory=list, description="Saved SMS investigations that suggested or confirmed this website; most recent 20.")
     notice: str = NOT_PROOF
 
 
@@ -113,7 +121,8 @@ class Investigation(BaseModel):
     id: int
     created_at: datetime
     channel: str
-    result: str | None = Field(description='"matched", "ambiguous" or "no_match"; never a confirmed leak.')
+    result: str | None = Field(description='Email: "matched", "ambiguous" or "no_match". SMS: the source status '
+                                           '"confirmed", "strong", "possible" or "unknown". Never a confirmed leak.')
     confidence: str | None
     matched_site: str | None
     recipient_alias_matched: bool
@@ -188,3 +197,22 @@ class InboxReadRequest(BaseModel):
 class InboxReadAllResponse(BaseModel):
     marked: int
     unread: int
+
+
+class TimelineItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    channel: Literal["email", "sms"]
+    id: int
+    at: datetime
+    title: str
+    status: str | None
+    site_name: str | None
+    signup_id: int | None
+    linked: bool = Field(description="Linked to a website by an exact alias (email) or your confirmation (SMS).")
+
+
+class Timeline(BaseModel):
+    items: list[TimelineItem]
+    notice: str = ("Email and SMS records are linked to a website only by an exact alias or by your own "
+                   "confirmation, never because they mention the same company.")
