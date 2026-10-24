@@ -1,0 +1,9 @@
+# Only backend/ and requirements-runtime.txt go into the image. Never send
+# local secrets, virtual environments, git history or test data to a build.
+*
+!backend/
+!requirements-runtime.txt
+**/__pycache__
+**/*.py[cod]
+**/.env
+**/.env.*

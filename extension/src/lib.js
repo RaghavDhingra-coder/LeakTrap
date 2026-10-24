@@ -178,12 +178,21 @@ export class ApiError extends Error {
   }
 }
 
+/** The standard local development backend (still validated like any other value). */
+export const DEFAULT_BASE_URL = "http://127.0.0.1:8000";
+
+export const OUTDATED_BACKEND_MESSAGE =
+  "This backend doesn't support LeakTrace accounts: it is outdated or not the LeakTrace API. "
+  + `In Settings, use ${DEFAULT_BASE_URL} (the current LeakTrace backend).`;
+
 export const RECONNECT_MESSAGE =
   "LeakTrace isn't connected to your account (or the connection expired or was revoked). Connect it again in Settings.";
 
 function errorMessage(status, body) {
   if (status === 401) return RECONNECT_MESSAGE;
   const detail = body?.detail;
+  // FastAPI's generic 404 means the route does not exist on this server.
+  if (status === 404 && detail === "Not Found") return OUTDATED_BACKEND_MESSAGE;
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail) && detail.length) {
     return detail.map((d) => {
@@ -250,6 +259,22 @@ export function createApi(baseUrl, fetchImpl = globalThis.fetch, token = null) {
       const auth = parseStoredAuth({ token: body.token, expiresAt: Date.parse(body.expires_at), email: body.email });
       if (!auth) throw new ApiError("The backend returned an unexpected token response.");
       return auth;
+    },
+    /**
+     * Whether this backend is a current LeakTrace API: /auth/me exists (401 when
+     * signed out). Sends no credentials. Returns { ok, reason }.
+     */
+    async checkBackend() {
+      let response;
+      try {
+        response = await fetchImpl(`${origin}/auth/me`, { method: "GET", headers: { accept: "application/json" },
+          credentials: "omit", cache: "no-store" });
+      } catch {
+        return { ok: false, reason: "unreachable", message: `Could not reach a backend at ${origin}. Is it running?` };
+      }
+      if (response.status === 401 || response.status === 200) return { ok: true, reason: "ok", message: "" };
+      if (response.status === 404) return { ok: false, reason: "outdated", message: OUTDATED_BACKEND_MESSAGE };
+      return { ok: false, reason: "error", message: `The backend at ${origin} answered HTTP ${response.status}.` };
     },
     async whoami() {
       const body = await call("/extension/whoami", { method: "GET" });

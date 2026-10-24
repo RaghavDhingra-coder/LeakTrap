@@ -1,5 +1,6 @@
 import {
-  ApiError, createApi, newPairingSecret, normalizeNeverSites, parseStoredAuth, removeNeverSite, sha256Hex, validateBaseUrl,
+  ApiError, DEFAULT_BASE_URL, createApi, newPairingSecret, normalizeNeverSites, parseStoredAuth, removeNeverSite, sha256Hex,
+  validateBaseUrl,
 } from "./src/lib.js";
 import { el, show } from "./src/dom.js";
 
@@ -12,24 +13,43 @@ function say(message, isError = false) {
   status.classList.toggle("error", isError);
 }
 
+/** Check the saved backend and explain any problem (wrong port, outdated server, not running). */
+async function checkSavedBackend(baseUrl, savedNow = false) {
+  const prefix = savedNow ? `Saved ${baseUrl}. ` : "";
+  say(`${prefix}Checking the backend…`);
+  const result = await createApi(baseUrl).checkBackend();
+  if (result.ok) say(`${prefix}The backend at ${baseUrl} is a current LeakTrace API.`);
+  else say(`${prefix}${result.message}`, true);
+  return result.ok;
+}
+
+async function saveBaseUrl(value) {
+  try {
+    const baseUrl = validateBaseUrl(value);
+    await chrome.storage.local.set({ baseUrl });
+    input.value = baseUrl;
+    await checkSavedBackend(baseUrl, true);
+  } catch (error) {
+    say(error.message, true);
+  }
+}
+
 try {
   const { baseUrl } = await chrome.storage.local.get("baseUrl");
-  if (baseUrl) input.value = baseUrl;
+  if (baseUrl) {
+    input.value = baseUrl;
+    await checkSavedBackend(baseUrl);
+  }
 } catch {
   say("Could not read the saved setting.", true);
 }
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  try {
-    const baseUrl = validateBaseUrl(input.value);
-    await chrome.storage.local.set({ baseUrl });
-    input.value = baseUrl;
-    say(`Saved. The popup will use ${baseUrl}.`);
-  } catch (error) {
-    say(error.message, true);
-  }
+  await saveBaseUrl(input.value);
 });
+
+document.getElementById("use-default").addEventListener("click", () => saveBaseUrl(DEFAULT_BASE_URL));
 
 document.getElementById("clear").addEventListener("click", async () => {
   try {

@@ -10,13 +10,15 @@ from backend.services.mail_ingest import now
 
 MAX_CLOCK_SKEW = timedelta(minutes=5)
 MAX_AGE = timedelta(days=30)
+MAX_AUTH_RESULTS_LENGTH = 2000
 
 
 class MailIngestRequest(BaseModel):
     """Minimal metadata about one inbound email, sent by the email Worker.
 
-    There are deliberately no fields for the body, attachments or authentication
-    verdicts (SPF/DKIM); claims like those are not accepted.
+    There are deliberately no fields for the body or attachments. Authentication
+    verdicts are accepted only as the raw ARC-Authentication-Results header, from
+    which the backend keeps Cloudflare's own verdicts.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -31,13 +33,18 @@ class MailIngestRequest(BaseModel):
         examples=["Example Deals <deals@broker.example>"],
     )
     subject: str | None = Field(
-        default=None, max_length=998, description="Raw Subject header. Untrusted; never stored."
+        default=None, max_length=998,
+        description="Raw Subject header. Untrusted; stored only when the recipient is attributed to an account.",
     )
     message_id: str | None = Field(
         default=None, max_length=998, description="Message-ID header, used only for deduplication."
     )
     received_at: AwareDatetime | None = Field(
         default=None, description="When the Worker received the message (timezone required)."
+    )
+    auth_results: str | None = Field(
+        default=None, max_length=MAX_AUTH_RESULTS_LENGTH,
+        description="Raw ARC-Authentication-Results header. Only verdicts from mx.cloudflare.net are kept.",
     )
 
     @field_validator("recipient")
@@ -76,8 +83,16 @@ class MailIngestRequest(BaseModel):
 
 
 class MailIngestResponse(BaseModel):
-    status: Literal["accepted", "duplicate"]
+    status: Literal["accepted", "duplicate", "reprocessed"] = Field(
+        description='"reprocessed": a redelivery of a message whose analysis had failed was analysed again.'
+    )
     mail_log_id: int
     recipient_known: bool = Field(description="Whether the recipient is a stored alias.")
-    match_status: str = Field(description='"matched", "ambiguous" or "no_match". Never proof of a leak.')
-    match_confidence: str
+    ingest_status: Literal["matched", "unmatched", "failed"] = Field(
+        description="Whether the recipient was attributed to an account's signup."
+    )
+    status_reason: str | None = Field(description="Why the message is unmatched or failed.")
+    match_status: str | None = Field(
+        description='"matched", "ambiguous" or "no_match"; null if the analysis failed. Never proof of a leak.'
+    )
+    match_confidence: str | None

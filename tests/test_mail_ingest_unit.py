@@ -15,7 +15,14 @@ from backend.database import get_db
 from backend.main import app
 from backend.routes.ingest import IngestConfig, get_ingest_config
 from backend.schemas.mail_ingest import MailIngestRequest
-from backend.services.mail_ingest import InboundMail, decode_subject, dedup_hash, parse_from_header
+from backend.services.mail_ingest import (
+    InboundMail,
+    decode_subject,
+    dedup_hash,
+    parse_auth_results,
+    parse_from_header,
+    parse_sender_name,
+)
 
 SECRET = "t" * 48
 CONFIG = IngestConfig(secret=SECRET, max_bytes=16384, alias_domain="leaktrap.xyz")
@@ -197,3 +204,34 @@ def test_dedup_hash_prefers_message_id_and_is_stable() -> None:
     assert dedup_hash(a) != dedup_hash(c)
     assert re.fullmatch(r"[0-9a-f]{64}", dedup_hash(a))
     assert "abc" not in dedup_hash(a)
+
+    # The same message delivered to a second alias is a separate copy.
+    other = InboundMail("cd34@leaktrap.xyz", None, None, "Hi", "abc@x", now)
+    assert dedup_hash(a) != dedup_hash(other)
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [("Deals <deals@broker.example>", "Deals"), ('"Odd, Name" <x@shop.example.com>', "Odd, Name"),
+     ("=?UTF-8?B?Q2Fmw6k=?= <x@shop.example.com>", "Café"), ("deals@broker.example", None),
+     ('"support@bank.example" <x@evil.example>', None),  # an address as a name would mislead
+     ("Bad\x07Name <x@shop.example.com>", "Bad Name"), ("Name <not-an-address>", None),
+     ("N" * 500 + " <x@shop.example.com>", "N" * 200), (None, None), ("", None)],
+)
+def test_parse_sender_name(header, expected) -> None:
+    assert parse_sender_name(header) == expected
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [("i=1; mx.cloudflare.net; dkim=pass header.d=a.example; spf=pass smtp.mailfrom=b@a.example; dmarc=pass",
+      "spf=pass dkim=pass dmarc=pass"),
+     ("i=1; MX.Cloudflare.NET; spf=SoftFail", "spf=softfail"),
+     ("i=1; mx.cloudflare.net; dkim=fail; dkim=pass", "dkim=fail"),
+     ("i=1; mx.cloudflare.net; arc=none", None),
+     ("i=1; mx.cloudflare.net.evil.example; spf=pass", None),
+     ("i=1; evil.example; spf=pass, i=1; mx.cloudflare.net; spf=pass", None),  # topmost instance only
+     ("spf=pass dkim=pass", None), ("", None), (None, None)],
+)
+def test_parse_auth_results(header, expected) -> None:
+    assert parse_auth_results(header) == expected

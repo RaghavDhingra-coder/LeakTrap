@@ -1,11 +1,14 @@
 """Response models for the personal dashboard API (the signed-in user's own data).
 
-Full email senders, subjects, message hashes and bodies are never returned.
+Message hashes and bodies are never returned. Sender names, addresses and
+subjects are returned only by the inbox endpoints, only for messages recorded
+by inbox tracking, and only to the account that owns the receiving alias.
 """
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 NOT_PROOF = (
     "A match links a message to one of your signups. It is not proof that a site "
@@ -24,6 +27,7 @@ class OverviewResponse(BaseModel):
     no_match: int
     unprocessed: int = Field(description="Mail records without a stored match status.")
     investigations: int = Field(description="Matcher results you chose to record.")
+    unread: int = Field(description="Unread inbox messages.")
     notice: str = NOT_PROOF
 
 
@@ -124,3 +128,63 @@ class InvestigationPage(BaseModel):
     limit: int
     offset: int
     notice: str = NOT_PROOF
+
+
+UNTRUSTED = (
+    "Sender names, addresses and subjects come from the message itself and can be forged. "
+    "Authentication results are as reported by Cloudflare's header; LeakTrace does not verify them."
+)
+
+
+class InboxItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    received_at: datetime
+    status: Literal["matched", "unmatched", "failed"] = Field(
+        description='"matched": linked to one of your websites by its exact alias; "unmatched": not linked '
+                    '(status_reason says why); "failed": linked, but the leak analysis failed.'
+    )
+    status_reason: str | None
+    tracked: bool = Field(description="False for records from before inbox tracking; they have no message details.")
+    unread: bool
+    read_at: datetime | None
+    alias: str | None = Field(description="The alias the message was delivered to (envelope recipient).")
+    signup_id: int | None
+    site_name: str | None
+    site_domain: str | None
+    identity: str | None = Field(description="Nickname and surname variant used for this website.")
+    identity_kind: Literal["nickname", "real_name", "none"]
+    sender_name: str | None = Field(description="From header display name. Untrusted.")
+    sender_email: str | None = Field(description="From header address (or envelope sender). Untrusted.")
+    sender_domain: str | None
+    subject: str | None = Field(description="Untrusted.")
+    auth_results: str | None = Field(description='e.g. "spf=pass dkim=pass dmarc=pass", as reported by Cloudflare.')
+    match_status: str | None
+    match_confidence: str | None
+
+
+class InboxPage(BaseModel):
+    items: list[InboxItem]
+    total: int
+    limit: int
+    offset: int
+    unread: int
+    notice: str = UNTRUSTED
+
+
+class InboxUpdates(BaseModel):
+    unread: int
+    latest_id: int = Field(description="Pass as after_id on the next poll; 0 when there are no messages.")
+    new: list[InboxItem] = Field(description="Messages recorded after after_id, newest first (at most 10).")
+
+
+class InboxReadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    read: StrictBool
+
+
+class InboxReadAllResponse(BaseModel):
+    marked: int
+    unread: int

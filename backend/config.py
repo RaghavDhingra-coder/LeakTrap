@@ -23,9 +23,16 @@ APP_DESCRIPTION = (
 )
 
 
+APP_MODES = ("full", "ingest")
+MIN_SECRET_LENGTH = 32
+
+
 @dataclass(frozen=True)
 class Settings:
     environment: str
+    # "full": every API and the local dashboard. "ingest": only the health
+    # checks and POST /ingest/email, for a publicly reachable deployment.
+    app_mode: str
     log_level: str
     # Expected format: postgresql+psycopg://USER:PASSWORD@HOST:5432/DATABASE
     database_url: str | None = field(repr=False)
@@ -72,6 +79,7 @@ def get_settings() -> Settings:
     environment = os.getenv("LEAKTRACE_ENV", "development")
     return Settings(
         environment=environment,
+        app_mode=os.getenv("LEAKTRACE_APP_MODE", "full").strip().lower() or "full",
         log_level=os.getenv("LEAKTRACE_LOG_LEVEL", "INFO").upper(),
         database_url=os.getenv("DATABASE_URL") or None,
         db_pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
@@ -92,6 +100,25 @@ def get_settings() -> Settings:
         secret_key=os.getenv("LEAKTRACE_SECRET_KEY") or None,
         email_delivery=os.getenv("LEAKTRACE_EMAIL_DELIVERY") or None,
     )
+
+
+def configuration_problems(s: Settings) -> list[str]:
+    """Settings that make this deployment unusable. Names variables, never values."""
+    problems = []
+    if s.app_mode not in APP_MODES:
+        problems.append("LEAKTRACE_APP_MODE must be 'full' or 'ingest'")
+    if not s.database_url:
+        problems.append("DATABASE_URL is not set")
+    elif not s.database_url.startswith("postgresql+psycopg://"):
+        problems.append("DATABASE_URL must start with postgresql+psycopg://")
+    if s.app_mode == "ingest":
+        if not s.ingest_secret or len(s.ingest_secret) < MIN_SECRET_LENGTH:
+            problems.append(f"LEAKTRACE_INGEST_SECRET must be at least {MIN_SECRET_LENGTH} characters")
+        if not s.alias_domain:
+            problems.append("LEAKTRACE_ALIAS_DOMAIN is not set")
+    elif s.environment != "development" and not s.secret_key:
+        problems.append("LEAKTRACE_SECRET_KEY is not set")
+    return problems
 
 
 def mask_database_url(url: str | None) -> str:

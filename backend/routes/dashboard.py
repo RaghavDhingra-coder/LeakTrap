@@ -12,17 +12,25 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.database import get_db
+from backend.routes.common import read_limited_body, require_json, validation_error
 from backend.schemas.dashboard import (
     DashboardEmail,
     DashboardEmailDetail,
     DashboardEmailPage,
     DashboardSignup,
     DashboardSignupPage,
+    InboxItem,
+    InboxPage,
+    InboxReadAllResponse,
+    InboxReadRequest,
+    InboxUpdates,
     Investigation,
     InvestigationPage,
     OverviewResponse,
@@ -38,6 +46,7 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "dashboard"
 STATIC_FILES = {"app.js": "text/javascript", "styles.css": "text/css"}
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 MAX_PAGE_SIZE = 100
+MAX_BODY_BYTES = 1024
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -161,3 +170,71 @@ def get_investigations(
 ) -> InvestigationPage:
     items, total = dashboard.list_investigations(db, auth.user_id, limit, offset)
     return InvestigationPage(items=[Investigation.model_validate(i) for i in items], total=total, limit=limit, offset=offset)
+
+
+# ---------- inbox ----------
+
+MailLogId = PathParam(gt=0, le=MAX_BIGINT)
+INBOX_NOT_FOUND = HTTPException(404, "Email not found")
+
+
+@router.get("/api/inbox", response_model=InboxPage)
+def get_inbox(
+    limit: int = Limit,
+    offset: int = Offset,
+    filter: Literal["all", "unread", "matched", "unmatched", "failed"] = "all",
+    auth: AuthContext = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> InboxPage:
+    """Email received at your aliases, newest first, with the unread count."""
+    items, total, unread = dashboard.list_inbox(db, auth.user_id, limit, offset, filter)
+    return InboxPage(items=[InboxItem.model_validate(i) for i in items], total=total, limit=limit,
+                     offset=offset, unread=unread)
+
+
+@router.get("/api/inbox/updates", response_model=InboxUpdates)
+def get_inbox_updates(
+    after_id: int | None = Query(None, ge=0, le=MAX_BIGINT, description="latest_id from the previous poll."),
+    auth: AuthContext = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> InboxUpdates:
+    """For polling: the unread count and messages recorded since the last poll."""
+    updates = dashboard.inbox_updates(db, auth.user_id, after_id)
+    return InboxUpdates(unread=updates.unread, latest_id=updates.latest_id,
+                        new=[InboxItem.model_validate(i) for i in updates.new])
+
+
+@router.post("/api/inbox/read-all", response_model=InboxReadAllResponse)
+def read_all(auth: AuthContext = Depends(require_user), db: Session = Depends(get_db)) -> InboxReadAllResponse:
+    marked = dashboard.mark_all_read(db, auth.user_id)
+    return InboxReadAllResponse(marked=marked, unread=dashboard.unread_count(db, auth.user_id))
+
+
+@router.get("/api/inbox/{mail_log_id}", response_model=InboxItem, responses={404: {}})
+def get_inbox_item(
+    mail_log_id: int = MailLogId, auth: AuthContext = Depends(require_user), db: Session = Depends(get_db),
+) -> InboxItem:
+    """One message. Reading it does not mark it read; use the read endpoint."""
+    row = dashboard.get_inbox_item(db, auth.user_id, mail_log_id)
+    if row is None:
+        raise INBOX_NOT_FOUND
+    return InboxItem.model_validate(row)
+
+
+@router.post("/api/inbox/{mail_log_id}/read", response_model=InboxItem, responses={404: {}})
+async def set_inbox_read(
+    request: Request,
+    mail_log_id: int = MailLogId,
+    auth: AuthContext = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> InboxItem:
+    """Mark a message read ({"read": true}) or unread ({"read": false})."""
+    require_json(request)
+    try:
+        body = InboxReadRequest.model_validate_json(await read_limited_body(request, MAX_BODY_BYTES))
+    except ValidationError as exc:
+        raise validation_error(exc) from None
+    row = await run_in_threadpool(dashboard.set_read, db, auth.user_id, mail_log_id, body.read)
+    if row is None:
+        raise INBOX_NOT_FOUND
+    return InboxItem.model_validate(row)

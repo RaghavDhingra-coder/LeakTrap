@@ -159,14 +159,14 @@ def test_dashboard_has_receipts_view_with_states_and_safe_rendering(local) -> No
     assert "Local development only." in page.text
     assert "content-security-policy" in page.headers
     js = (DASHBOARD / "app.js").read_text()
-    for state in ("Loading…", "No consent receipts in this scope yet.", "setStatus(section, error.message, true)"):
+    for state in ("Loading…", "No consent receipts yet.", "setStatus(section, error.message, true)"):
         assert state in js, state
     assert "user-reported (not verified)" in js
     assert "Reported event time (unverified)" in js and "Recorded by LeakTrace (server time)" in js
     for unsafe in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
         assert unsafe not in js
-    # No delete controls for receipts in this phase.
-    assert 'method: "DELETE"' not in js and "DELETE" not in js
+    # No delete controls for receipts (DELETE is used only for the account and extension connections).
+    assert "/consent-receipts/" not in [line for line in js.splitlines() if "DELETE" in line].__str__()
 
 
 def test_existing_routes_still_registered() -> None:

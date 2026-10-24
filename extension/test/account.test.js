@@ -87,3 +87,37 @@ test("the token is kept only in session storage and never logged or shown", () =
   assert.ok(!/console\.\w+\([^)]*token/i.test(all), "token must never be logged");
   assert.ok(!/textContent\s*=\s*[^;]*\.token/.test(all), "token must never be displayed");
 });
+
+// ---------- wrong or outdated backend ----------
+
+import { DEFAULT_BASE_URL, OUTDATED_BACKEND_MESSAGE } from "../src/lib.js";
+
+test("the default backend is local-only and passes validation", async () => {
+  const { validateBaseUrl } = await import("../src/lib.js");
+  assert.equal(DEFAULT_BASE_URL, "http://127.0.0.1:8000");
+  assert.equal(validateBaseUrl(DEFAULT_BASE_URL), DEFAULT_BASE_URL);
+});
+
+test("checkBackend: current API, outdated server, unreachable, other errors", async () => {
+  const at = (status) => createApi("http://127.0.0.1:8003", fakeFetch(status, { detail: "x" }));
+  assert.equal((await at(401).checkBackend()).ok, true);
+  assert.equal((await at(200).checkBackend()).ok, true);
+  const outdated = await at(404).checkBackend();
+  assert.deepEqual([outdated.ok, outdated.reason, outdated.message], [false, "outdated", OUTDATED_BACKEND_MESSAGE]);
+  assert.equal((await at(500).checkBackend()).reason, "error");
+  const down = await createApi("http://127.0.0.1:8003", async () => { throw new TypeError("Failed to fetch"); }).checkBackend();
+  assert.equal(down.reason, "unreachable");
+  const sent = fakeFetch(401, {});
+  await createApi(DEFAULT_BASE_URL, sent, TOKEN).checkBackend();
+  assert.equal(sent.calls[0].url, "http://127.0.0.1:8000/auth/me");
+  assert.equal(sent.calls[0].init.credentials, "omit");
+  assert.ok(!("authorization" in sent.calls[0].init.headers), "no token sent to an unverified backend");
+});
+
+test("a missing route (FastAPI 'Not Found') is reported as an outdated backend", async () => {
+  await assert.rejects(createApi("http://127.0.0.1:8003", fakeFetch(404, { detail: "Not Found" })).startPairing("a".repeat(64)),
+    (e) => e.message === OUTDATED_BACKEND_MESSAGE);
+  // The app's own 404s keep their meaning.
+  await assert.rejects(createApi(DEFAULT_BASE_URL, fakeFetch(404, { detail: "Signup not found" }), TOKEN).createReceipt({}),
+    /Signup not found/);
+});

@@ -145,3 +145,16 @@ def test_responsive_layout_rules() -> None:
     for selector in ("body", "html", "main"):
         match = re.search(rf"(^|\n){selector}\s*\{{([^}}]*)\}}", css)
         assert not match or "overflow" not in match.group(2), selector
+
+
+def test_messages_that_end_with_a_full_stop_are_not_doubled() -> None:
+    [one, two] = format_details([[{"loc": ["password"], "msg": "Use at least 12 characters."}],
+                                 [{"loc": ["password"], "msg": "Too short."}, {"loc": ["email"], "msg": "Invalid."}]])
+    assert one["message"] == "Password: Use at least 12 characters."
+    assert two["message"] == "Password: Too short; Email: Invalid."
+
+
+def test_hidden_attribute_always_hides() -> None:
+    # Rules such as ".count { display: inline-block }" would otherwise show hidden elements.
+    css = (DASHBOARD / "styles.css").read_text()
+    assert "display: none !important" in rule(css, "[hidden]")

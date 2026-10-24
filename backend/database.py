@@ -51,6 +51,8 @@ def build_engine(url: str) -> Engine:
         max_overflow=settings.db_max_overflow,
         pool_recycle=settings.db_pool_recycle_seconds,
         pool_pre_ping=True,
+        # Fail fast rather than outlast the email Worker's 10-second request timeout.
+        connect_args={"connect_timeout": 8},
     )
 
 

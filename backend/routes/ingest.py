@@ -62,11 +62,12 @@ def require_ingest_auth(
     status_code=201,
     response_model=MailIngestResponse,
     responses={
-        200: {"description": "Already ingested (duplicate delivery); nothing changed"},
+        200: {"description": "Already ingested (duplicate delivery), or a failed analysis was rerun"},
         401: {"description": "Missing or invalid Bearer secret"},
         413: {"description": "Body too large"},
         415: {"description": "Body is not JSON"},
         422: {"description": "Invalid payload or recipient outside the alias domain"},
+        500: {"description": "Unexpected error; nothing was stored"},
         503: {"description": "Ingestion or database not configured or unavailable"},
     },
     openapi_extra={"requestBody": {"required": True, "content": {"application/json": {
@@ -78,10 +79,12 @@ async def ingest_email(
     config: IngestConfig = Depends(require_ingest_auth),
     db: Session = Depends(get_db),
 ) -> MailIngestResponse:
-    """Record one inbound email and match it against the recipient alias's signups.
+    """Record one inbound email, attribute it to the signup whose alias is exactly
+    the envelope recipient, and match it against that account's signups.
 
     A match is never proof that a site leaked data. Safe to retry: a repeated
-    delivery returns 200 with status "duplicate" and stores nothing new.
+    delivery returns 200 with status "duplicate" and stores nothing new, unless
+    the first analysis failed, in which case it is rerun ("reprocessed").
     """
     require_json(request)
     body = await read_limited_body(request, config.max_bytes)
@@ -104,19 +107,23 @@ async def ingest_email(
         subject=mail_ingest.decode_subject(payload.subject),
         message_id=payload.message_id,
         received_at=payload.received_at or mail_ingest.now(),
+        sender_name=mail_ingest.parse_sender_name(payload.from_header),
+        auth_results=mail_ingest.parse_auth_results(payload.auth_results),
     )
     outcome = await run_in_threadpool(mail_ingest.process, db, mail)
     logger.info(
-        "Ingested email: mail_log_id=%d duplicate=%s recipient_known=%s match=%s/%s",
-        outcome.mail_log_id, outcome.duplicate, outcome.recipient_known,
-        outcome.match_status, outcome.match_confidence,
+        "Ingested email: mail_log_id=%d duplicate=%s reprocessed=%s ingest=%s/%s match=%s/%s",
+        outcome.mail_log_id, outcome.duplicate, outcome.reprocessed, outcome.ingest_status,
+        outcome.status_reason, outcome.match_status, outcome.match_confidence,
     )
     if outcome.duplicate:
         response.status_code = 200
     return MailIngestResponse(
-        status="duplicate" if outcome.duplicate else "accepted",
+        status="reprocessed" if outcome.reprocessed else "duplicate" if outcome.duplicate else "accepted",
         mail_log_id=outcome.mail_log_id,
         recipient_known=outcome.recipient_known,
+        ingest_status=outcome.ingest_status,
+        status_reason=outcome.status_reason,
         match_status=outcome.match_status,
         match_confidence=outcome.match_confidence,
     )

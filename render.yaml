@@ -1,0 +1,34 @@
+# Render Blueprint for the LeakTrace public ingest service. Nothing deploys
+# until you create the Blueprint in the Render dashboard and approve it.
+# Secrets are marked sync: false, so Render asks for them; never put values here.
+services:
+  - type: web
+    name: leaktrace-ingest
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Ohio: the same region as the Neon database (aws us-east-2).
+    region: ohio
+    # Starter stays running. On the free plan the service sleeps when idle and
+    # can take far longer than the Worker's 10-second timeout to wake.
+    plan: starter
+    autoDeploy: false
+    healthCheckPath: /health
+    envVars:
+      - key: LEAKTRACE_ENV
+        value: production
+      - key: LEAKTRACE_APP_MODE
+        value: ingest
+      - key: LEAKTRACE_ALIAS_DOMAIN
+        value: leaktrap.xyz
+      - key: LEAKTRACE_LOG_LEVEL
+        value: INFO
+      - key: DB_POOL_SIZE
+        value: "2"
+      - key: DB_MAX_OVERFLOW
+        value: "3"
+      # Neon pooled connection string (postgresql+psycopg://...-pooler...).
+      - key: DATABASE_URL
+        sync: false
+      # Same value as the Worker's INGEST_SECRET; at least 32 characters.
+      - key: LEAKTRACE_INGEST_SECRET
+        sync: false

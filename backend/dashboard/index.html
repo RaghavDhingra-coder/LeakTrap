@@ -61,9 +61,18 @@
         <p id="pair-status" class="status" aria-live="polite"></p>
       </section>
 
+      <section id="notifications" class="notifications" aria-label="New email notifications" hidden>
+        <div class="row">
+          <h2 class="sr-only">Notifications</h2>
+          <ul id="notification-list" class="plain-list" aria-live="polite"></ul>
+          <button type="button" id="notifications-dismiss" class="secondary">Dismiss</button>
+        </div>
+      </section>
+
       <nav class="tabs" role="tablist" aria-label="Dashboard sections">
         <button role="tab" id="tab-overview" aria-controls="view-overview" aria-selected="true">Overview</button>
-        <button role="tab" id="tab-websites" aria-controls="view-websites" aria-selected="false" tabindex="-1">My websites</button>
+        <button role="tab" id="tab-websites" aria-controls="view-websites" aria-selected="false" tabindex="-1">Websites &amp; aliases</button>
+        <button role="tab" id="tab-inbox" aria-controls="view-inbox" aria-selected="false" tabindex="-1">Inbox <span id="unread-badge" class="count" hidden></span></button>
         <button role="tab" id="tab-receipts" aria-controls="view-receipts" aria-selected="false" tabindex="-1">Consent receipts</button>
         <button role="tab" id="tab-activity" aria-controls="view-activity" aria-selected="false" tabindex="-1">Leak activity</button>
         <button role="tab" id="tab-check" aria-controls="view-check" aria-selected="false" tabindex="-1">Match check</button>
@@ -74,11 +83,19 @@
         <h2>Overview</h2>
         <p class="notice" role="note">A match links a message to one of your signups. It is not proof that a site leaked, sold or shared your data.</p>
         <div class="status" data-status aria-live="polite"></div>
-        <dl class="cards" id="overview-cards"></dl>
+        <dl class="cards cards-primary" id="overview-cards"></dl>
+        <h3>Matching and records</h3>
+        <dl class="cards" id="overview-more"></dl>
+        <div class="section-head">
+          <h3 id="recent-title">Recent email</h3>
+          <button type="button" id="recent-open-inbox" class="secondary">Open inbox</button>
+        </div>
+        <p id="recent-status" class="status" aria-live="polite"></p>
+        <ul id="recent-list" class="inbox" aria-labelledby="recent-title"></ul>
       </section>
 
       <section id="view-websites" role="tabpanel" aria-labelledby="tab-websites" hidden>
-        <h2>My websites</h2>
+        <h2>Websites &amp; aliases</h2>
         <form id="websites-search" class="filters" role="search">
           <label for="websites-q">Search</label>
           <input id="websites-q" name="q" type="search" maxlength="100" placeholder="Site, domain, alias or nickname">
@@ -109,6 +126,34 @@
           <div id="website-detail-body"></div>
           <button type="button" id="website-detail-close">Close details</button>
         </section>
+      </section>
+
+      <section id="view-inbox" role="tabpanel" aria-labelledby="tab-inbox" hidden>
+        <h2>Inbox</h2>
+        <p class="hint">Email delivered to your aliases. Each message is linked to a website only when it was sent to that website's exact alias. Message bodies and attachments are never received or stored.</p>
+        <div class="filters">
+          <div role="group" aria-label="Show" id="inbox-filters" class="segmented">
+            <button type="button" data-filter="all" aria-pressed="true">All</button>
+            <button type="button" data-filter="unread" aria-pressed="false">Unread</button>
+            <button type="button" data-filter="matched" aria-pressed="false">Matched</button>
+            <button type="button" data-filter="unmatched" aria-pressed="false">Unmatched</button>
+            <button type="button" data-filter="failed" aria-pressed="false">Failed</button>
+          </div>
+          <button type="button" id="inbox-read-all" class="secondary">Mark all as read</button>
+        </div>
+        <div class="status" data-status aria-live="polite"></div>
+        <button type="button" id="inbox-retry" class="secondary" hidden>Try again</button>
+        <ul id="inbox-list" class="inbox" aria-label="Messages, newest first"></ul>
+        <div class="pager" data-pager="inbox"></div>
+        <section id="inbox-detail" class="detail" aria-labelledby="inbox-detail-title" tabindex="-1" hidden>
+          <h3 id="inbox-detail-title">Message details</h3>
+          <div id="inbox-detail-body"></div>
+          <div class="row">
+            <button type="button" id="inbox-detail-unread" class="secondary">Mark as unread</button>
+            <button type="button" id="inbox-detail-close">Close details</button>
+          </div>
+        </section>
+        <p class="notice" role="note" id="inbox-notice">Sender names, addresses and subjects come from the message itself and can be forged.</p>
       </section>
 
       <section id="view-receipts" role="tabpanel" aria-labelledby="tab-receipts" hidden>

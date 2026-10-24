@@ -180,7 +180,7 @@ def test_web_cookie_cannot_act_as_extension_token(alice) -> None:
 # ---------- API-wide authorization matrix ----------
 
 PUBLIC = {
-    ("GET", "/"), ("GET", "/health"), ("POST", "/auth/register"), ("POST", "/auth/login"),
+    ("GET", "/"), ("GET", "/health"), ("GET", "/health/ready"), ("POST", "/auth/register"), ("POST", "/auth/login"),
     ("POST", "/auth/verify-email"), ("POST", "/ingest/email"), ("POST", "/extension/pairings"),
     ("POST", "/extension/pairings/{pairing_id}/token"),
 }

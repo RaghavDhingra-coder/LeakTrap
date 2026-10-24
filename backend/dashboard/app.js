@@ -10,9 +10,21 @@ const STATUS_LABELS = {
   matched: "Matched", ambiguous: "Ambiguous", no_match: "No match", unprocessed: "Unprocessed",
 };
 const ACTION_LABELS = { accepted: "Accepted", declined: "Declined", notice_only: "Only saw the notice" };
+const INBOX_STATUS_LABELS = { matched: "Matched", unmatched: "Unmatched", failed: "Failed" };
+const REASON_LABELS = {
+  not_linked: "Not linked to any of your websites. The website may have been deleted.",
+  analysis_failed: "Linked to your website, but the leak analysis failed. It runs again if the message is redelivered.",
+  unknown_alias: "Sent to an address that is not one of your aliases.",
+  unowned_alias: "Sent to an alias that is not linked to an account.",
+  ambiguous_alias: "The recipient matched more than one alias, so it was not linked.",
+};
+const POLL_INTERVAL_MS = 30_000;
+const MAX_POLL_INTERVAL_MS = 5 * 60_000;
+const MAX_NOTIFICATIONS = 5;
 const state = {
-  me: null, offsets: { websites: 0, receipts: 0, emails: 0, investigations: 0 },
+  me: null, offsets: { websites: 0, receipts: 0, emails: 0, investigations: 0, inbox: 0 },
   emailStatus: "", websiteQuery: "", websiteFilter: "all", pairCode: null,
+  inboxFilter: "all", openEmailId: null, latestEmailId: null, pollTimer: null, pollDelay: POLL_INTERVAL_MS,
 };
 
 // ---------- helpers ----------
@@ -65,6 +77,33 @@ function siteLabel(name, domain) {
   return name ? `${name}${domain ? ` (${domain})` : ""}` : "—";
 }
 
+// ---------- inbox text (pure: no DOM) ----------
+
+/** Who the message was addressed to, as the website knows the user. */
+function identityText(m) {
+  if (m.identity) return m.identity;
+  if (m.identity_kind === "real_name") return "your real name";
+  return m.alias ?? "an unknown alias";
+}
+
+function notificationText(m) {
+  const site = m.site_name ? ` on ${m.site_name}` : "";
+  return `New email received for ${identityText(m)}${site}`;
+}
+
+function senderText(m) {
+  if (m.sender_name && m.sender_email) return `${m.sender_name} <${m.sender_email}>`;
+  return m.sender_name ?? m.sender_email ?? (m.sender_domain ? `someone at ${m.sender_domain}` : "Unknown sender");
+}
+
+function reasonText(reason) {
+  return reason ? (REASON_LABELS[reason] ?? "Not linked to any of your websites.") : null;
+}
+
+function unreadLabel(count) {
+  return count === 1 ? "1 unread email" : `${count} unread emails`;
+}
+
 // Form labels for request fields, used in validation messages.
 const FIELD_LABELS = {
   signup_id: "Signup ID", action: "What you did", source_url: "Privacy notice URL",
@@ -110,7 +149,8 @@ function validationErrors(detail) {
 
 function validationSummary(errors) {
   if (!errors.length) return "The request was not accepted. Check the highlighted values.";
-  const shown = errors.slice(0, MAX_SHOWN_ERRORS).map((e) => e.text).join("; ");
+  // Messages may already end with a full stop; avoid "..".
+  const shown = errors.slice(0, MAX_SHOWN_ERRORS).map((e) => e.text.replace(/\.+$/, "")).join("; ");
   const more = errors.length - MAX_SHOWN_ERRORS;
   return more > 0 ? `${shown}; and ${more} more.` : `${shown}.`;
 }
@@ -206,6 +246,8 @@ function show(view) {
 
 function signedOut(message = "") {
   state.me = null;
+  stopPolling();
+  dismissNotifications();
   show("auth");
   document.getElementById("verify-banner").hidden = true;
   if (message) say("login-status", message, "error");
@@ -230,6 +272,7 @@ async function signedIn(me) {
   renderVerifyBanner();
   showPairCard();
   selectTab(currentTab());
+  schedulePoll(0);
 }
 
 async function login(event) {
@@ -317,22 +360,46 @@ async function approvePairing() {
 
 // ---------- overview ----------
 
+function cardList(entries) {
+  return entries.map(([label, value, hint]) => el("div", {}, el("dt", {}, label), el("dd", {}, value),
+    hint ? el("p", { class: "hint" }, hint) : null));
+}
+
 async function loadOverview() {
   const section = document.getElementById("view-overview");
   const cards = document.getElementById("overview-cards");
+  const more = document.getElementById("overview-more");
   setStatus(section, "Loading…");
   cards.replaceChildren();
+  more.replaceChildren();
   try {
     const d = await getJSON(`${API}/overview`);
-    const entries = [
-      ["Websites tracked", d.websites], ["Aliases", d.aliases], ["Nicknames", d.nicknames],
-      ["Consent receipts", d.receipts], ["Emails received", d.emails_total], ["Matched", d.matched],
+    cards.replaceChildren(...cardList([
+      ["Websites", d.websites], ["Aliases", d.aliases], ["Emails received", d.emails_total],
+      ["Unread", d.unread, d.unread ? "In your inbox" : null],
+    ]));
+    more.replaceChildren(...cardList([
+      ["Nicknames", d.nicknames], ["Consent receipts", d.receipts], ["Matched", d.matched],
       ["Ambiguous", d.ambiguous], ["No match", d.no_match], ["Investigations", d.investigations],
-    ];
-    cards.replaceChildren(...entries.map(([label, value]) => el("div", {}, el("dt", {}, label), el("dd", {}, value))));
+    ]));
+    setUnreadBadge(d.unread);
     setStatus(section, d.websites === 0 ? "No websites yet. Create a signup with the LeakTrace extension to start." : "");
   } catch (error) {
     setStatus(section, error.message, true);
+  }
+  await loadRecent();
+}
+
+async function loadRecent() {
+  const listBox = document.getElementById("recent-list");
+  say("recent-status", "Loading…");
+  listBox.replaceChildren();
+  try {
+    const page = await getJSON(`${API}/inbox?${new URLSearchParams({ limit: 5 })}`);
+    listBox.replaceChildren(...page.items.map((m) => inboxCard(m, { compact: true })));
+    say("recent-status", page.total === 0 ? "No email has arrived at your aliases yet." : "");
+  } catch (error) {
+    say("recent-status", error.message, "error");
   }
 }
 
@@ -498,6 +565,214 @@ async function createReceipt(event) {
     status.classList.add("error");
     markInvalid(form, error.fields, "receipt-form-status");
   }
+}
+
+// ---------- inbox ----------
+
+function setUnreadBadge(count) {
+  const badge = document.getElementById("unread-badge");
+  badge.hidden = !count;
+  badge.textContent = count > 99 ? "99+" : String(count);
+  badge.setAttribute("aria-label", unreadLabel(count));
+}
+
+function inboxStatusBadge(m) {
+  return el("span", { class: `badge badge-inbox-${m.status}` }, INBOX_STATUS_LABELS[m.status] ?? m.status);
+}
+
+function inboxCard(m, { compact = false } = {}) {
+  const title = m.tracked ? (m.subject ?? "(no subject)") : "Recorded before inbox tracking";
+  const meta = [
+    el("span", {}, formatTime(m.received_at)),
+    el("span", {}, m.site_name ? siteLabel(m.site_name, m.site_domain) : "No website"),
+    m.alias ? el("span", { class: "marker" }, m.alias) : null,
+  ];
+  return el("li", { class: `card${m.unread ? " unread" : ""}`, "data-id": m.id },
+    el("article", { "aria-label": `${m.unread ? "Unread: " : ""}${title}` },
+      el("div", { class: "card-head" },
+        m.unread ? el("span", { class: "dot", "aria-hidden": "true" }) : null,
+        m.unread ? el("span", { class: "sr-only" }, "Unread. ") : null,
+        el("strong", { class: "card-title" }, title),
+        inboxStatusBadge(m)),
+      el("p", { class: "card-line" }, m.tracked && m.status !== "unmatched" ? notificationText(m) : reasonText(m.status_reason) ?? ""),
+      el("p", { class: "card-line hint" }, m.tracked ? `From ${senderText(m)}` : "Sender and subject were not stored for this record."),
+      el("p", { class: "card-meta hint" }, ...meta.filter(Boolean).flatMap((node, i) => (i ? [" · ", node] : [node]))),
+      compact ? null : el("button", { type: "button", "aria-label": `Open message: ${title}`,
+        onclick: () => showInboxDetail(m.id) }, "Open")));
+}
+
+async function loadInbox() {
+  const section = document.getElementById("view-inbox");
+  const listBox = document.getElementById("inbox-list");
+  const retry = document.getElementById("inbox-retry");
+  retry.hidden = true;
+  setStatus(section, "Loading…");
+  listBox.setAttribute("aria-busy", "true");
+  const params = new URLSearchParams({ limit: PAGE_SIZE, offset: state.offsets.inbox, filter: state.inboxFilter });
+  try {
+    const page = await getJSON(`${API}/inbox?${params}`);
+    listBox.replaceChildren(...page.items.map((m) => inboxCard(m)));
+    renderPager("inbox", page, loadInbox);
+    setUnreadBadge(page.unread);
+    document.getElementById("inbox-read-all").disabled = page.unread === 0;
+    document.getElementById("inbox-notice").textContent = page.notice;
+    const empty = {
+      all: "No email has arrived at your aliases yet.", unread: "No unread email.",
+      matched: "No email linked to your websites.", unmatched: "No unmatched email.", failed: "No failed messages.",
+    }[state.inboxFilter];
+    setStatus(section, page.total === 0 ? empty : `${unreadLabel(page.unread)}.`);
+  } catch (error) {
+    listBox.replaceChildren();
+    setStatus(section, error.message, true);
+    retry.hidden = false;
+  } finally {
+    listBox.removeAttribute("aria-busy");
+  }
+}
+
+function setInboxFilter(filter) {
+  state.inboxFilter = filter;
+  state.offsets.inbox = 0;
+  for (const button of document.querySelectorAll("#inbox-filters [data-filter]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.filter === filter));
+  }
+  document.getElementById("inbox-detail").hidden = true;
+  loadInbox();
+}
+
+function inboxDetailRows(d) {
+  return [
+    ["Received", formatTime(d.received_at)],
+    ["Sent to", d.identity ? `${d.identity} (${d.alias ?? "no alias"})` : (d.alias ?? "—")],
+    ["Website", d.site_name ? `#${d.signup_id} ${siteLabel(d.site_name, d.site_domain)}` : "Not linked"],
+    ["Status", inboxStatusBadge(d)],
+    d.status_reason ? ["Why", reasonText(d.status_reason)] : null,
+    ["From", d.tracked ? senderText(d) : "Not stored"],
+    ["Subject", d.tracked ? (d.subject ?? "(no subject)") : "Not stored"],
+    ["Sender domain (claimed)", d.sender_domain ?? "—"],
+    ["Authentication (Cloudflare, unverified)", d.auth_results ?? "Not available"],
+    ["Leak match", d.match_status ? el("span", {}, statusBadge(d.match_status), ` confidence: ${d.match_confidence ?? "—"}`) : "Not analysed"],
+    ["Read", d.read_at ? formatTime(d.read_at) : (d.tracked ? "Unread" : "—")],
+  ].filter(Boolean);
+}
+
+async function showInboxDetail(id) {
+  const panel = document.getElementById("inbox-detail");
+  const body = document.getElementById("inbox-detail-body");
+  const unreadButton = document.getElementById("inbox-detail-unread");
+  state.openEmailId = id;
+  panel.hidden = false;
+  unreadButton.hidden = true;
+  body.replaceChildren(el("p", { role: "status" }, "Loading…"));
+  try {
+    let d = await getJSON(`${API}/inbox/${encodeURIComponent(id)}`);
+    if (d.unread) {
+      d = await api(`${API}/inbox/${encodeURIComponent(id)}/read`, { method: "POST", body: { read: true } });
+      refreshUnread();
+    }
+    body.replaceChildren(
+      el("dl", {}, ...inboxDetailRows(d).flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
+      el("p", { class: "notice", role: "note" }, "A message linked to a website is not proof that the website leaked, sold or shared your data."));
+    unreadButton.hidden = !d.tracked;
+    replaceCard(d);
+  } catch (error) {
+    body.replaceChildren(el("p", { class: "error", role: "alert" }, error.message));
+  }
+  panel.focus();
+}
+
+/** Re-render one message's card in the inbox list after its read state changed. */
+function replaceCard(m) {
+  document.querySelector(`#inbox-list li[data-id="${Number(m.id)}"]`)?.replaceWith(inboxCard(m));
+}
+
+async function markOpenEmailUnread() {
+  if (!state.openEmailId) return;
+  try {
+    await api(`${API}/inbox/${encodeURIComponent(state.openEmailId)}/read`, { method: "POST", body: { read: false } });
+    document.getElementById("inbox-detail").hidden = true;
+    await loadInbox();
+  } catch (error) {
+    setStatus(document.getElementById("view-inbox"), error.message, true);
+  }
+}
+
+async function markAllRead() {
+  const section = document.getElementById("view-inbox");
+  try {
+    const result = await api(`${API}/inbox/read-all`, { method: "POST" });
+    await loadInbox();
+    setStatus(section, result.marked === 1 ? "Marked 1 email as read." : `Marked ${result.marked} emails as read.`);
+  } catch (error) {
+    setStatus(section, error.message, true);
+  }
+}
+
+// ---------- polling and notifications ----------
+
+async function refreshUnread() {
+  try {
+    const updates = await getJSON(`${API}/inbox/updates`);
+    setUnreadBadge(updates.unread);
+  } catch {
+    // The badge is refreshed again by the next poll.
+  }
+}
+
+function notify(items) {
+  const region = document.getElementById("notifications");
+  const listBox = document.getElementById("notification-list");
+  for (const m of [...items].reverse()) {
+    listBox.prepend(el("li", {}, el("strong", {}, notificationText(m)), " — ",
+      `${senderText(m)}: ${m.subject ?? "(no subject)"} · ${formatTime(m.received_at)} · ${m.alias ?? ""}`,
+      " ", el("button", { type: "button", class: "link", onclick: () => openFromNotification(m.id) }, "View")));
+  }
+  while (listBox.children.length > MAX_NOTIFICATIONS) listBox.lastElementChild.remove();
+  region.hidden = listBox.children.length === 0;
+}
+
+function dismissNotifications() {
+  document.getElementById("notification-list").replaceChildren();
+  document.getElementById("notifications").hidden = true;
+}
+
+function openFromNotification(id) {
+  selectTab(document.getElementById("tab-inbox"));
+  showInboxDetail(id);
+}
+
+async function poll() {
+  state.pollTimer = null;
+  if (!state.me) return;
+  try {
+    const params = state.latestEmailId === null ? "" : `?${new URLSearchParams({ after_id: state.latestEmailId })}`;
+    const updates = await getJSON(`${API}/inbox/updates${params}`);
+    if (!state.me) return;
+    setUnreadBadge(updates.unread);
+    const fresh = updates.new.filter((m) => m.status !== "unmatched");
+    if (fresh.length) notify(fresh);
+    if (updates.new.length && currentTab()?.id === "tab-inbox" && state.offsets.inbox === 0) loadInbox();
+    if (updates.new.length && currentTab()?.id === "tab-overview") loadRecent();
+    state.latestEmailId = updates.latest_id;
+    state.pollDelay = POLL_INTERVAL_MS;
+  } catch (error) {
+    if (!state.me) return;
+    // Back off while the server is unreachable; the next success resets it.
+    state.pollDelay = Math.min(state.pollDelay * 2, MAX_POLL_INTERVAL_MS);
+  }
+  schedulePoll();
+}
+
+function schedulePoll(delay = state.pollDelay) {
+  clearTimeout(state.pollTimer);
+  state.pollTimer = setTimeout(poll, delay);
+}
+
+function stopPolling() {
+  clearTimeout(state.pollTimer);
+  state.pollTimer = null;
+  state.latestEmailId = null;
+  state.pollDelay = POLL_INTERVAL_MS;
 }
 
 // ---------- leak activity ----------
@@ -696,7 +971,7 @@ async function deleteAccount(event) {
 // ---------- tabs ----------
 
 const loaders = {
-  overview: loadOverview, websites: loadWebsites, receipts: loadReceipts, activity: loadActivity,
+  overview: loadOverview, websites: loadWebsites, inbox: loadInbox, receipts: loadReceipts, activity: loadActivity,
   check: () => {}, settings: loadSettings,
 };
 
@@ -748,6 +1023,21 @@ document.addEventListener("DOMContentLoaded", async () => {
     loadEmails();
   });
   document.getElementById("email-detail-close").addEventListener("click", () => { document.getElementById("email-detail").hidden = true; });
+  for (const button of document.querySelectorAll("#inbox-filters [data-filter]")) {
+    button.addEventListener("click", () => setInboxFilter(button.dataset.filter));
+  }
+  document.getElementById("inbox-read-all").addEventListener("click", markAllRead);
+  document.getElementById("inbox-retry").addEventListener("click", loadInbox);
+  document.getElementById("inbox-detail-unread").addEventListener("click", markOpenEmailUnread);
+  document.getElementById("inbox-detail-close").addEventListener("click", () => {
+    document.getElementById("inbox-detail").hidden = true;
+    state.openEmailId = null;
+  });
+  document.getElementById("recent-open-inbox").addEventListener("click", () => selectTab(document.getElementById("tab-inbox"), true));
+  document.getElementById("notifications-dismiss").addEventListener("click", dismissNotifications);
+  document.addEventListener("visibilitychange", () => {
+    if (state.me && document.visibilityState === "visible") schedulePoll(0);
+  });
   document.getElementById("check-form").addEventListener("submit", runCheck);
   document.getElementById("resend-verification").addEventListener("click", resendVerification);
   document.getElementById("password-form").addEventListener("submit", changePassword);

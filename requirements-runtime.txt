@@ -1,0 +1,11 @@
+# Runtime dependencies only (used by the Dockerfile).
+fastapi==0.159.1
+pydantic==2.14.1
+uvicorn==0.54.0
+python-dotenv==1.2.4
+argon2-cffi==25.1.0
+
+# Database (PostgreSQL only)
+SQLAlchemy==2.1.6
+psycopg[binary]==3.3.6
+alembic==1.20.1

@@ -9,11 +9,14 @@ workers_dev = false
 [vars]
 # Only recipients exactly at this domain are processed.
 ALIAS_DOMAIN = "leaktrap.xyz"
-# Public HTTPS URL of the backend endpoint, e.g. "https://api.example.com/ingest/email".
-# Cloudflare cannot reach localhost. Must be https.
+# Public HTTPS URL of the backend's ingest endpoint: the Render service from
+# render.yaml, e.g. "https://leaktrace-ingest.onrender.com/ingest/email" (use the
+# exact URL Render shows). Cloudflare cannot reach localhost. Must be https.
+# While empty, every message goes to FALLBACK_ADDRESS or is refused.
 INGEST_URL = ""
 # Optional: a verified Email Routing destination address that receives the
 # original message whenever the backend does not accept it.
 FALLBACK_ADDRESS = ""
 
-# Secret (never put it here): npx wrangler secret put INGEST_SECRET
+# Secret (never put it here): npx wrangler@4 secret put INGEST_SECRET
+# It must equal LEAKTRACE_INGEST_SECRET on the backend.

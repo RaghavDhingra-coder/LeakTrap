@@ -19,6 +19,7 @@ function fakeMessage(overrides = {}) {
       from: "Deals <deals@broker.example>",
       subject: "Hi Ocelot",
       "message-id": "<abc@mailer.example>",
+      "arc-authentication-results": "i=1; mx.cloudflare.net; spf=pass smtp.mailfrom=bounce@mailer.example",
     }),
     rejected: null,
     forwardedTo: [],
@@ -66,7 +67,17 @@ test("payload contains only the agreed minimal fields", () => {
     subject: "Hi Ocelot",
     message_id: "<abc@mailer.example>",
     received_at: "2026-10-22T10:00:00.000Z",
+    auth_results: "i=1; mx.cloudflare.net; spf=pass smtp.mailfrom=bounce@mailer.example",
   });
+});
+
+test("the envelope recipient is sent, not the To or Cc headers", () => {
+  const payload = buildPayload(fakeMessage({
+    to: " Cd34@LeakTrap.xyz ",
+    headers: new Headers({ to: "ab12@leaktrap.xyz, ef56@leaktrap.xyz", cc: "gh78@leaktrap.xyz" }),
+  }));
+  assert.equal(payload.recipient, "cd34@leaktrap.xyz");
+  assert.ok(!JSON.stringify(payload).includes("ab12") && !JSON.stringify(payload).includes("gh78"));
 });
 
 test("missing headers become null and long headers are truncated", () => {
@@ -78,6 +89,9 @@ test("missing headers become null and long headers are truncated", () => {
   assert.equal(payload.from_header, null);
   assert.equal(payload.message_id, null);
   assert.equal(payload.subject.length, 998);
+  assert.equal(payload.auth_results, null);
+  const long = buildPayload(fakeMessage({ headers: new Headers({ "arc-authentication-results": "a".repeat(5000) }) }));
+  assert.equal(long.auth_results.length, 2000);
 });
 
 test("accepted message is posted with the secret and not forwarded", async () => {

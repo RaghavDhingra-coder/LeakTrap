@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, delete, func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.database import get_db
@@ -64,27 +65,68 @@ def mail_logs(session: Session) -> list[MailLog]:
     return session.scalars(select(MailLog).order_by(MailLog.id)).all()
 
 
-def test_valid_ingestion_stores_minimal_record(client, session, signups) -> None:
+CLOUDFLARE_AUTH = ("i=1; mx.cloudflare.net; dkim=pass header.d=broker.example; "
+                   "spf=pass smtp.mailfrom=bounce@mailer.example; dmarc=fail header.from=broker.example")
+
+
+def test_attributed_ingestion_stores_inbox_record(client, session, signups) -> None:
     received = "2026-10-22T08:00:00+00:00"
-    response = ingest(client, received_at=received)
+    response = ingest(client, received_at=received, auth_results=CLOUDFLARE_AUTH)
     assert response.status_code == 201
     body = response.json()
     assert body["status"] == "accepted"
     assert body["recipient_known"] is True
+    assert (body["ingest_status"], body["status_reason"]) == ("matched", None)
     assert (body["match_status"], body["match_confidence"]) == ("matched", "high")
-    assert set(body) == {"status", "mail_log_id", "recipient_known", "match_status", "match_confidence"}
+    assert set(body) == {"status", "mail_log_id", "recipient_known", "ingest_status", "status_reason",
+                         "match_status", "match_confidence"}
 
     [log] = mail_logs(session)
     assert log.id == body["mail_log_id"]
     assert log.signup_id == signups["alice_shop"].id
     assert log.user_id == signups["alice_shop"].user_id
     assert log.alias == "ab12@leaktrap.xyz"
+    assert (log.sender_name, log.sender, log.subject) == ("Deals", "deals@broker.example", "Hi Ocelot")
     assert log.sender_domain == "broker.example"  # From header, not the envelope
-    assert log.sender is None and log.subject is None  # full sender and subject not stored
+    assert log.auth_results == "spf=pass dkim=pass dmarc=fail"
+    assert (log.ingest_status, log.status_reason, log.read_at) == ("matched", None, None)
     assert log.is_spam is False
     assert len(log.message_id_hash) == 64 and "m1" not in log.message_id_hash
     assert log.received_at == datetime(2026, 10, 22, 8, tzinfo=timezone.utc)
     assert (log.match_status, log.match_confidence) == ("matched", "high")
+
+
+def test_recipient_is_matched_exactly_and_never_guessed(client, session, signups) -> None:
+    assert ingest(client, recipient="AB12@LeakTrap.XYZ", message_id="<c1@x>").json()["ingest_status"] == "matched"
+    for i, lookalike in enumerate(["ab12+promo@leaktrap.xyz", "ab12x@leaktrap.xyz", "ab1@leaktrap.xyz",
+                                   "a.b12@leaktrap.xyz"]):
+        body = ingest(client, recipient=lookalike, message_id=f"<g{i}@x>").json()
+        assert (body["ingest_status"], body["status_reason"], body["recipient_known"]) == (
+            "unmatched", "unknown_alias", False), lookalike
+    logs = mail_logs(session)
+    assert [log.user_id is not None for log in logs] == [True, False, False, False, False]
+
+
+def test_same_message_to_several_aliases_is_kept_once_per_alias(client, session, signups) -> None:
+    """One message to Alice and Bob arrives as one delivery per envelope recipient,
+    with the same Message-ID. Each owner gets their own record."""
+    first = ingest(client, recipient="ab12@leaktrap.xyz")
+    second = ingest(client, recipient="ef56@leaktrap.xyz")
+    retry = ingest(client, recipient="ef56@leaktrap.xyz")
+    assert (first.status_code, second.status_code, retry.status_code) == (201, 201, 200)
+    assert retry.json()["mail_log_id"] == second.json()["mail_log_id"]
+    by_user = {log.user_id: log for log in mail_logs(session)}
+    assert set(by_user) == {signups["alice_shop"].user_id, signups["bob_broker"].user_id}
+    assert by_user[signups["bob_broker"].user_id].signup_id == signups["bob_broker"].id
+
+
+def test_forged_or_foreign_authentication_results_are_ignored(client, session, signups) -> None:
+    ingest(client, auth_results="i=1; mx.evil.example; spf=pass dkim=pass dmarc=pass")
+    ingest(client, message_id="<m2@x>", auth_results="spf=pass dkim=pass")
+    ingest(client, message_id="<m3@x>", auth_results="i=1; mx.cloudflare.net; spf=softfail, i=1; mx.cloudflare.net; spf=pass")
+    assert [log.auth_results for log in mail_logs(session)] == [None, None, "spf=softfail"]
+    too_long = ingest(client, message_id="<m4@x>", auth_results="a" * 2001)
+    assert too_long.status_code == 422
 
 
 def test_envelope_sender_used_when_from_header_unusable(client, session, signups) -> None:
@@ -117,10 +159,14 @@ def test_unknown_alias_is_recorded_without_searching(client, session, signups, m
     assert response.status_code == 201
     body = response.json()
     assert body["recipient_known"] is False
+    assert (body["ingest_status"], body["status_reason"]) == ("unmatched", "unknown_alias")
     assert (body["match_status"], body["match_confidence"]) == ("no_match", "none")
     assert called == []  # no broadened search across owners
     [log] = mail_logs(session)
     assert log.signup_id is None and log.user_id is None
+    # Nobody can see this record, so no message details are kept.
+    assert (log.sender, log.sender_name, log.subject, log.auth_results) == (None, None, None, None)
+    assert (log.alias, log.sender_domain) == ("zz99@leaktrap.xyz", "broker.example")
 
 
 def test_matching_stays_within_alias_owner(client, session, signups) -> None:
@@ -141,16 +187,42 @@ def test_unowned_alias_scope(client, session) -> None:
     session.commit()
     body = ingest(client, recipient="aa11@leaktrap.xyz", from_header="x@anon.example").json()
     assert (body["match_status"], body["recipient_known"]) == ("matched", True)
+    assert (body["ingest_status"], body["status_reason"]) == ("unmatched", "unowned_alias")
+    [log] = mail_logs(session)
+    assert log.user_id is None and log.subject is None and log.sender is None
 
 
-def test_processing_failure_returns_500_and_stores_nothing(client, session, signups, monkeypatch) -> None:
+def test_analysis_failure_is_recorded_as_failed_and_retried(client, session, signups, monkeypatch) -> None:
+    real_check = mail_ingest.matcher.check
+
     def explode(*args, **kwargs):
         raise RuntimeError("matcher bug")
 
     monkeypatch.setattr(mail_ingest.matcher, "check", explode)
     response = ingest(client)
-    assert response.status_code == 500
+    assert response.status_code == 201
     assert "matcher bug" not in response.text
+    body = response.json()
+    assert (body["ingest_status"], body["status_reason"], body["match_status"]) == ("failed", "analysis_failed", None)
+    [log] = mail_logs(session)
+    assert log.user_id == signups["alice_shop"].user_id and log.subject == "Hi Ocelot"  # still in the inbox
+
+    assert ingest(client).json()["status"] == "duplicate"  # still failing: unchanged
+    monkeypatch.setattr(mail_ingest.matcher, "check", real_check)
+    retry = ingest(client)
+    assert (retry.status_code, retry.json()["status"], retry.json()["mail_log_id"]) == (200, "reprocessed", log.id)
+    [log] = mail_logs(session)
+    assert (log.ingest_status, log.status_reason, log.match_status) == ("matched", None, "matched")
+    assert ingest(client).json()["status"] == "duplicate"
+
+
+def test_database_failure_during_analysis_stores_nothing(client, session, signups, monkeypatch) -> None:
+    def unavailable(*args, **kwargs):
+        raise OperationalError("SELECT", {}, Exception("connection refused"))
+
+    monkeypatch.setattr(mail_ingest.matcher, "check", unavailable)
+    response = ingest(client)
+    assert response.status_code == 503  # the Worker then forwards or retries
     assert mail_logs(session) == []
 
 
@@ -161,7 +233,7 @@ def test_logs_never_contain_addresses_subjects_or_secret(client, session, signup
     ingest(client, recipient="zz99@leaktrap.xyz", message_id="<m2@x.example>")
     text = caplog.text.lower()
     for value in ["ab12@leaktrap.xyz", "zz99", "bounce@mailer.example", "deals@broker.example",
-                  "hi ocelot", "m1@mailer.example", SECRET]:
+                  "hi ocelot", "m1@mailer.example", SECRET, "deals <"]:
         assert value not in text, value
     assert "mail_log_id=" in text
 
