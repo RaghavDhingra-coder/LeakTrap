@@ -13,7 +13,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 from backend.database import Base
 from backend.models.mixins import CreatedAtMixin, IdMixin
 
-SESSION_KINDS = ("web", "extension")
+SESSION_KINDS = ("web", "extension", "mobile")
+# Which kind of client a pairing connects; it decides the session kind and scopes issued.
+PAIRING_KINDS = ("extension", "mobile")
 CLAIMABLE_TABLES = ("signups", "consent_receipts", "mail_log", "incidents")
 
 
@@ -41,7 +43,7 @@ class UserSession(IdMixin, CreatedAtMixin, Base):
 
 
 class ExtensionPairing(IdMixin, CreatedAtMixin, Base):
-    """A pending connection between a browser extension and an account."""
+    """A pending connection between a browser extension or a mobile device and an account."""
 
     __tablename__ = "extension_pairings"
 
@@ -52,6 +54,12 @@ class ExtensionPairing(IdMixin, CreatedAtMixin, Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Added in migration 0006. Existing pairings are extension pairings.
+    client_kind: Mapped[str] = mapped_column(String(16), nullable=False, server_default="extension")
+    # Name the device gave itself, shown to the user before approval (mobile only).
+    device_label: Mapped[str | None] = mapped_column(String(100))
+
+    __table_args__ = (CheckConstraint(_in("client_kind", PAIRING_KINDS), name="client_kind_allowed"),)
 
 
 class EmailVerificationToken(IdMixin, CreatedAtMixin, Base):

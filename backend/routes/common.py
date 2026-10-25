@@ -27,3 +27,16 @@ def validation_error(exc: ValidationError) -> HTTPException:
     """422 listing locations and reasons only, never the submitted values."""
     errors = exc.errors(include_input=False, include_url=False, include_context=False)
     return HTTPException(422, [{"loc": list(e["loc"]), "msg": e["msg"]} for e in errors])
+
+
+TOO_MANY = HTTPException(429, "Too many attempts. Wait a while and try again.")
+
+
+async def parse_json(request: Request, model, limit: int):
+    """Parse a JSON body of at most `limit` bytes into `model`; errors never echo values."""
+    require_json(request)
+    body = await read_limited_body(request, limit)
+    try:
+        return model.model_validate_json(body)
+    except ValidationError as exc:
+        raise validation_error(exc) from None

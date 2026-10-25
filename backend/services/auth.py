@@ -59,6 +59,10 @@ LIMITS = {
     "pairing_start_ip": (10, timedelta(hours=1)),
     "pairing_exchange_ip": (120, timedelta(hours=1)),
     "pairing_approve_failed_user": (10, timedelta(minutes=15)),
+    "mobile_pairing_start_ip": (10, timedelta(hours=1)),
+    "mobile_pairing_exchange_ip": (120, timedelta(hours=1)),
+    "sms_analyze_user": (60, timedelta(hours=1)),
+    "sms_write_user": (120, timedelta(hours=1)),
     "verify_failed_ip": (20, timedelta(hours=1)),
 }
 
@@ -115,6 +119,14 @@ def record_event(session: Session, kind: str, value: str) -> None:
 def check_rate(session: Session, kind: str, value: str) -> None:
     if rate_limited(session, kind, value):
         raise RateLimited
+
+
+def limit_user(session: Session, kind: str, user_id: int) -> None:
+    """Count one request against a per-user limit. Raises RateLimited once it is used up;
+    refused requests are not counted."""
+    check_rate(session, kind, str(user_id))
+    record_event(session, kind, str(user_id))
+    session.commit()
 
 
 # ---------- passwords and registration ----------
@@ -267,6 +279,8 @@ def authenticate(session: Session, token: str) -> AuthContext | None:
     if row is None or row.revoked_at is not None or row.expires_at <= current:
         return None
     if row.kind == "web" and row.last_used_at < current - timedelta(hours=settings.session_idle_hours):
+        return None
+    if row.kind == "mobile" and row.last_used_at < current - timedelta(days=settings.mobile_idle_days):
         return None
     user = session.get(User, row.user_id)
     if user is None or user.disabled_at is not None or user.email is None:

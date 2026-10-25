@@ -32,3 +32,65 @@ services:
       # Same value as the Worker's INGEST_SECRET; at least 32 characters.
       - key: LEAKTRACE_INGEST_SECRET
         sync: false
+  - type: web
+    name: leaktrace-mobile
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: ohio
+    plan: starter
+    autoDeploy: false
+    healthCheckPath: /health
+    envVars:
+      - key: LEAKTRACE_ENV
+        value: staging
+      - key: LEAKTRACE_APP_MODE
+        value: mobile
+      - key: LEAKTRACE_DASHBOARD_ENABLED
+        value: "false"
+      - key: LEAKTRACE_ALIAS_DOMAIN
+        value: leaktrap.xyz
+      - key: LEAKTRACE_LOG_LEVEL
+        value: INFO
+      - key: DB_POOL_SIZE
+        value: "2"
+      - key: DB_MAX_OVERFLOW
+        value: "3"
+      - key: DATABASE_URL
+        sync: false
+      - key: LEAKTRACE_SECRET_KEY
+        sync: false
+  - type: web
+    name: leaktrace-dashboard
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: ohio
+    plan: starter
+    autoDeploy: false
+    healthCheckPath: /health
+    envVars:
+      - key: LEAKTRACE_ENV
+        value: staging
+      - key: LEAKTRACE_APP_MODE
+        value: full
+      - key: LEAKTRACE_DASHBOARD_ENABLED
+        value: "true"
+      # Remote access stays disabled until the Render proxy allowlist and
+      # assigned HTTPS origin are explicitly configured.
+      - key: LEAKTRACE_DASHBOARD_PUBLIC
+        value: "false"
+      - key: FORWARDED_ALLOW_IPS
+        value: "127.0.0.1,::1"
+      - key: LEAKTRACE_COOKIE_SECURE
+        value: "true"
+      - key: LEAKTRACE_ALIAS_DOMAIN
+        value: leaktrap.xyz
+      - key: LEAKTRACE_LOG_LEVEL
+        value: INFO
+      - key: DB_POOL_SIZE
+        value: "2"
+      - key: DB_MAX_OVERFLOW
+        value: "3"
+      - key: DATABASE_URL
+        sync: false
+      - key: LEAKTRACE_SECRET_KEY
+        sync: false

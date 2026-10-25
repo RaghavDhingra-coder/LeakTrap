@@ -6,6 +6,7 @@ revocable from the dashboard or by the extension itself.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 from fastapi.responses import JSONResponse
@@ -39,6 +40,8 @@ class PairingStarted(BaseModel):
 class PairingApprove(BaseModel):
     model_config = ConfigDict(extra="forbid")
     code: str = Field(min_length=8, max_length=12)
+    # What the user is approving. A code of the other kind is refused like an unknown code.
+    kind: Literal["extension", "mobile"] = "extension"
 
 
 class PairingExchange(BaseModel):
@@ -85,11 +88,14 @@ async def approve_pairing(request: Request, auth: AuthContext = Depends(require_
                           db: Session = Depends(get_db)) -> dict:
     data = await parse(request, PairingApprove)
     try:
-        await run_in_threadpool(pairing.approve, db, auth.user_id, data.code)
+        await run_in_threadpool(pairing.approve, db, auth.user_id, data.code, data.kind)
     except pairing.PairingNotFound:
-        raise HTTPException(404, "That code is unknown, already used or expired. Start again in the extension.") from None
+        where = "the extension" if data.kind == "extension" else "the LeakTrace app"
+        raise HTTPException(404, f"That code is unknown, already used or expired. Start again in {where}.") from None
     except RateLimited:
         raise TOO_MANY from None
+    if data.kind == "mobile":
+        return {"detail": "Approved. Your device will finish connecting in a moment."}
     return {"detail": "Approved. The extension will finish connecting in a moment."}
 
 

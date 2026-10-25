@@ -33,7 +33,7 @@ const THEME_KEY = "leaktrace.theme";
 const state = {
   me: null, offsets: { websites: 0, receipts: 0, emails: 0, investigations: 0, inbox: 0, sms: 0 },
   sms: { exclude: [], additions: [], analysis: null, saved: null },
-  emailStatus: "", websiteQuery: "", websiteFilter: "all", pairCode: null,
+  emailStatus: "", websiteQuery: "", websiteFilter: "all", pairCode: null, deviceCode: null,
   inboxFilter: "all", openEmailId: null, latestEmailId: null, pollTimer: null, pollDelay: POLL_INTERVAL_MS,
 };
 
@@ -1694,6 +1694,7 @@ async function loadSettings() {
       : el("span", { class: "badge badge-ambiguous" }, "Not verified")));
   document.getElementById("resend-verification").hidden = me.email_verified;
   await loadExtensions();
+  await loadDevices();
 }
 
 async function loadExtensions() {
@@ -1729,6 +1730,83 @@ async function revokeExtension(id) {
   }
 }
 
+// ---------- mobile devices ----------
+
+async function loadDevices() {
+  const listBox = document.getElementById("devices-list");
+  say("devices-status", "Loading…");
+  listBox.replaceChildren();
+  try {
+    const devices = await getJSON("/mobile/devices");
+    listBox.replaceChildren(...devices.map((d) => el("li", {},
+      el("div", {}, el("span", { class: "cell-title" }, d.label ?? "Mobile device"),
+        el("span", { class: "cell-sub" }, `Connected ${formatTime(d.created_at)} · last used ${formatTime(d.last_used_at)} · expires ${formatTime(d.expires_at)}`)),
+      el("button", { type: "button", class: "btn btn-secondary btn-sm", "aria-label": `Revoke mobile device ${d.id}`,
+        onclick: () => revokeDevice(d.id) }, "Revoke"))));
+    say("devices-status", devices.length ? "" : "No mobile device is connected.");
+  } catch (error) {
+    say("devices-status", error.message, "error");
+  }
+}
+
+function resetDeviceApproval() {
+  state.deviceCode = null;
+  document.getElementById("device-approval").hidden = true;
+  document.getElementById("device-approval-label").textContent = "";
+}
+
+// Shows which device a code belongs to; approving is a separate, explicit step.
+async function checkDeviceCode(event) {
+  event.preventDefault();
+  const form = event.target;
+  const code = form.elements.code.value.trim().toUpperCase();
+  resetDeviceApproval();
+  markInvalid(form, [], "device-pair-status");
+  say("device-pair-status", "Checking…");
+  try {
+    const pending = await api("/mobile/pairings/preview", { method: "POST", body: { code } });
+    state.deviceCode = code;
+    document.getElementById("device-approval-label").textContent = pending.device_label;
+    document.getElementById("device-approval").hidden = false;
+    say("device-pair-status", `Code valid until ${formatTime(pending.expires_at)}.`);
+  } catch (error) {
+    say("device-pair-status", error.message, "error");
+    markInvalid(form, error.fields, "device-pair-status");
+  }
+}
+
+async function approveDevice() {
+  const button = document.getElementById("device-approve");
+  button.disabled = true;
+  say("device-pair-status", "Approving…");
+  try {
+    const result = await api("/extension/pairings/approve", { method: "POST", body: { code: state.deviceCode, kind: "mobile" } });
+    resetDeviceApproval();
+    document.getElementById("device-code-form").reset();
+    say("device-pair-status", result.detail, "ok");
+  } catch (error) {
+    say("device-pair-status", error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function revokeDevice(id) {
+  const confirmed = await confirmAction({
+    title: "Revoke this mobile device?",
+    body: "That device will be signed out of your account until it is connected again.",
+    confirmLabel: "Revoke",
+  });
+  if (!confirmed) return;
+  try {
+    await api(`/mobile/devices/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await loadDevices();
+    say("devices-status", "Device revoked. It can no longer use your account.", "ok");
+  } catch (error) {
+    say("devices-status", error.message, "error");
+  }
+}
+
 async function resendVerification() {
   try {
     const result = await api("/auth/verification/resend", { method: "POST" });
@@ -1747,9 +1825,10 @@ async function changePassword(event) {
     await api("/auth/password", { method: "POST", body: {
       current_password: form.elements.current_password.value, new_password: form.elements.new_password.value } });
     form.reset();
-    say("password-status", "Password changed. Your other sessions and browser extensions were signed out.", "ok");
+    say("password-status", "Password changed. Your other sessions, browser extensions and mobile devices were signed out.", "ok");
     toast("Password changed.");
     await loadExtensions();
+    await loadDevices();
   } catch (error) {
     say("password-status", error.message, "error");
     markInvalid(form, error.fields, "password-status");
@@ -1853,6 +1932,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("sign-out").addEventListener("click", signOut);
   document.getElementById("pair-approve").addEventListener("click", approvePairing);
   document.getElementById("pair-cancel").addEventListener("click", clearPairing);
+  document.getElementById("device-code-form").addEventListener("submit", checkDeviceCode);
+  document.getElementById("device-approve").addEventListener("click", approveDevice);
+  document.getElementById("device-cancel").addEventListener("click", () => {
+    resetDeviceApproval();
+    say("device-pair-status", "");
+  });
   document.getElementById("websites-search").addEventListener("submit", (event) => {
     event.preventDefault();
     state.websiteQuery = document.getElementById("websites-q").value.trim();

@@ -97,6 +97,17 @@ def test_dashboard_enabled_by_default_only_in_development(monkeypatch) -> None:
     assert get_settings().dashboard_enabled is False
 
 
+def test_mobile_device_approval_previews_then_explicitly_selects_mobile_kind() -> None:
+    source = (DASHBOARD_DIR / "app.js").read_text()
+    preview = source.index('api("/mobile/pairings/preview", { method: "POST", body: { code } })')
+    approval = source.index(
+        'api("/extension/pairings/approve", '
+        '{ method: "POST", body: { code: state.deviceCode, kind: "mobile" } })'
+    )
+    assert preview < approval
+    assert 'id="device-approval-label"' in (DASHBOARD_DIR / "index.html").read_text()
+
+
 @pytest.mark.parametrize(
     "query",
     ["/dashboard/api/signups?limit=0", "/dashboard/api/signups?limit=101",

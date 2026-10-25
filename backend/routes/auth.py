@@ -9,13 +9,13 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.database import get_db
 from backend.models import User
-from backend.routes.common import read_limited_body, require_json, validation_error
+from backend.routes.common import TOO_MANY, parse_json  # TOO_MANY is re-exported for other routers
 from backend.schemas.auth import (
     AccountDeletion,
     Credentials,
@@ -31,7 +31,6 @@ from backend.services import auth as auth_service
 from backend.services.auth import AuthContext, AuthError, PasswordPolicyError, RateLimited
 
 MAX_BODY = 8 * 1024
-TOO_MANY = HTTPException(429, "Too many attempts. Wait a while and try again.")
 REGISTERED = (
     "If this email address was not already registered, your account has been created. "
     "Sign in to continue."
@@ -42,12 +41,7 @@ account_router = APIRouter(tags=["auth"])
 
 
 async def parse(request: Request, model: type[BaseModel]):
-    require_json(request)
-    body = await read_limited_body(request, MAX_BODY)
-    try:
-        return model.model_validate_json(body)
-    except ValidationError as exc:
-        raise validation_error(exc) from None
+    return await parse_json(request, model, MAX_BODY)
 
 
 def password_error(exc: PasswordPolicyError, field: str) -> HTTPException:

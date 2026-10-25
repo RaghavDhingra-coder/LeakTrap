@@ -182,7 +182,8 @@ def test_web_cookie_cannot_act_as_extension_token(alice) -> None:
 PUBLIC = {
     ("GET", "/"), ("GET", "/health"), ("GET", "/health/ready"), ("POST", "/auth/register"), ("POST", "/auth/login"),
     ("POST", "/auth/verify-email"), ("POST", "/ingest/email"), ("POST", "/extension/pairings"),
-    ("POST", "/extension/pairings/{pairing_id}/token"),
+    ("POST", "/extension/pairings/{pairing_id}/token"), ("POST", "/mobile/v1/pairings"),
+    ("POST", "/mobile/v1/pairings/{pairing_id}/token"),
 }
 
 
@@ -196,7 +197,8 @@ def test_every_private_route_refuses_signed_out_requests(session) -> None:
                 if (method.upper(), path) in PUBLIC:
                     continue
                 concrete = path.replace("{signup_id}", "1").replace("{receipt_id}", "1").replace("{mail_log_id}", "1") \
-                    .replace("{session_id}", "1").replace("{pairing_id}", "1").replace("{investigation_id}", "1")
+                    .replace("{session_id}", "1").replace("{pairing_id}", "1").replace("{investigation_id}", "1") \
+                    .replace("{device_id}", "1").replace("{website_id}", "1").replace("{email_id}", "1")
                 r = client.request(method.upper(), concrete, json={}, headers={"Origin": ORIGIN})
                 assert r.status_code == 401, (method, path, r.status_code)
                 checked += 1

@@ -1,10 +1,8 @@
 """Personal dashboard: a static page plus JSON endpoints for the signed-in user.
 
 Every data endpoint requires a signed-in web session and returns only that
-user's records. As an extra layer while LeakTrace is not deployed, every route
-also only answers requests from this machine (loopback) and only when
-LEAKTRACE_DASHBOARD_ENABLED is on. A reverse proxy on the same machine would
-defeat the loopback check, so do not put this behind one or expose it.
+user's records. Dashboard access is disabled unless configured, and is
+loopback-only unless the explicit HTTPS public-origin mode is enabled.
 """
 
 from dataclasses import dataclass
@@ -13,18 +11,18 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Query, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from backend.config import settings
+from backend.config import settings, valid_public_dashboard_origin
 from backend.database import get_db
 from backend.routes.common import read_limited_body, require_json, validation_error
+from backend.routes import dashboard_views as views
+from backend.routes.dashboard_views import MAX_PAGE_SIZE, Limit, Offset  # MAX_PAGE_SIZE is re-exported for other routers
 from backend.schemas.dashboard import (
-    DashboardEmail,
     DashboardEmailDetail,
     DashboardEmailPage,
-    DashboardSignup,
     DashboardSignupPage,
     InboxItem,
     InboxPage,
@@ -35,20 +33,16 @@ from backend.schemas.dashboard import (
     InvestigationPage,
     OverviewResponse,
     SignupDetailResponse,
-    SignupReceipt,
-    SignupSms,
     Timeline,
-    TimelineItem,
 )
 from backend.schemas.signup import MAX_BIGINT
 from backend.security import require_user
-from backend.services import dashboard, matcher
+from backend.services import dashboard
 from backend.services.auth import AuthContext
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "dashboard"
 STATIC_FILES = {"app.js": "text/javascript", "styles.css": "text/css"}
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
-MAX_PAGE_SIZE = 100
 MAX_BODY_BYTES = 1024
 
 SECURITY_HEADERS = {
@@ -65,10 +59,13 @@ SECURITY_HEADERS = {
 @dataclass(frozen=True)
 class DashboardConfig:
     enabled: bool
+    public: bool = False
+    public_origin: str | None = None
 
 
 def get_dashboard_config() -> DashboardConfig:
-    return DashboardConfig(enabled=settings.dashboard_enabled)
+    return DashboardConfig(enabled=settings.dashboard_enabled, public=settings.dashboard_public,
+                           public_origin=settings.dashboard_public_origin)
 
 
 def require_local_dashboard(
@@ -76,6 +73,13 @@ def require_local_dashboard(
 ) -> None:
     if not config.enabled:
         raise HTTPException(404, "Not Found")
+    if config.public:
+        expected = valid_public_dashboard_origin(config.public_origin)
+        host = request.headers.get("host", "")
+        observed = valid_public_dashboard_origin(f"{request.url.scheme}://{host}")
+        if request.url.scheme.lower() != "https" or expected is None or observed != expected:
+            raise HTTPException(403, "The dashboard is not available from this origin.")
+        return
     host = request.client.host if request.client else None
     if host not in LOOPBACK_HOSTS:
         raise HTTPException(403, "The dashboard is only available from this machine.")
@@ -85,13 +89,18 @@ router = APIRouter(
     prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(require_local_dashboard)]
 )
 
-Limit = Query(20, ge=1, le=MAX_PAGE_SIZE)
-Offset = Query(0, ge=0, le=MAX_BIGINT)
-NOT_FOUND = HTTPException(404, "Not found")
+NOT_FOUND = HTTPException(404, views.SIGNUP_NOT_FOUND)
 
 
 @router.get("", include_in_schema=False)
-def page() -> FileResponse:
+def page(config: DashboardConfig = Depends(get_dashboard_config)) -> Response:
+    if config.public:
+        content = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        content = content.replace(
+            "<strong>Local development only.</strong> This dashboard only answers requests from this computer. Do not expose it publicly.",
+            "<strong>Secure dashboard.</strong> Sign in to access your LeakTrace account.",
+        )
+        return HTMLResponse(content, headers=SECURITY_HEADERS)
     return FileResponse(STATIC_DIR / "index.html", media_type="text/html", headers=SECURITY_HEADERS)
 
 
@@ -111,13 +120,12 @@ def get_overview(auth: AuthContext = Depends(require_user), db: Session = Depend
 def get_signups(
     limit: int = Limit,
     offset: int = Offset,
-    q: str | None = Query(None, max_length=100, description="Search site name, domain, alias or nickname."),
-    filter: Literal["all", "with_receipts", "with_emails", "real_name"] = "all",
+    q: str | None = views.SignupSearch,
+    filter: views.SignupFilter = "all",
     auth: AuthContext = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> DashboardSignupPage:
-    items, total = dashboard.list_signups(db, auth.user_id, limit, offset, q, filter)
-    return DashboardSignupPage(items=[DashboardSignup.model_validate(i) for i in items], total=total, limit=limit, offset=offset)
+    return views.signup_page(db, auth.user_id, limit, offset, q, filter)
 
 
 @router.get("/api/signups/{signup_id}", response_model=SignupDetailResponse, responses={404: {}})
@@ -126,36 +134,21 @@ def get_signup(
     auth: AuthContext = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> SignupDetailResponse:
-    detail = dashboard.get_signup_detail(db, auth.user_id, signup_id)
+    detail = views.signup_detail(db, auth.user_id, signup_id)
     if detail is None:
         raise NOT_FOUND
-    s = detail.signup
-    return SignupDetailResponse(
-        id=s.id, site_name=s.site_name, site_domain=s.site_domain, alias=s.alias, nickname=s.nickname,
-        surname_variant=s.surname_variant, real_name_required=s.real_name_required, real_name_used=s.real_name_used,
-        created_at=s.created_at,
-        receipts=[SignupReceipt(
-            id=r.id, action=r.action, evidence_basis="user_reported" if r.capture_source == "manual" else "unknown",
-            recorded_at=r.created_at, reported_occurred_at=r.reported_occurred_at, source_url=r.source_url,
-        ) for r in detail.receipts],
-        emails=[DashboardEmail.model_validate(e) for e in detail.emails],
-        sms_investigations=[SignupSms(
-            id=i.id, created_at=i.created_at, status=i.result,
-            confirmed=((i.evidence or {}).get("confirmed") or {}).get("signup_id") == s.id,
-        ) for i in detail.sms],
-    )
+    return detail
 
 
 @router.get("/api/emails", response_model=DashboardEmailPage)
 def get_emails(
     limit: int = Limit,
     offset: int = Offset,
-    status: Literal["matched", "ambiguous", "no_match", "unprocessed"] | None = None,
+    status: views.EmailStatus | None = None,
     auth: AuthContext = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> DashboardEmailPage:
-    items, total = dashboard.list_emails(db, auth.user_id, limit, offset, status)
-    return DashboardEmailPage(items=[DashboardEmail.model_validate(i) for i in items], total=total, limit=limit, offset=offset)
+    return views.email_page(db, auth.user_id, limit, offset, status)
 
 
 @router.get("/api/emails/{mail_log_id}", response_model=DashboardEmailDetail, responses={404: {}})
@@ -164,10 +157,10 @@ def get_email(
     auth: AuthContext = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> DashboardEmailDetail:
-    row = dashboard.get_email(db, auth.user_id, mail_log_id)
-    if row is None:
-        raise HTTPException(404, "Email record not found")
-    return DashboardEmailDetail(**vars(row), limitations=list(matcher.LIMITATIONS))
+    detail = views.email_detail(db, auth.user_id, mail_log_id)
+    if detail is None:
+        raise HTTPException(404, views.EMAIL_NOT_FOUND)
+    return detail
 
 
 @router.get("/api/investigations", response_model=InvestigationPage)
@@ -249,8 +242,8 @@ async def set_inbox_read(
 
 @router.get("/api/timeline", response_model=Timeline)
 def get_timeline(
-    limit: int = Query(30, ge=1, le=MAX_PAGE_SIZE),
+    limit: int = views.TimelineLimit,
     auth: AuthContext = Depends(require_user), db: Session = Depends(get_db),
 ) -> Timeline:
     """Your email and saved SMS investigations, newest first."""
-    return Timeline(items=[TimelineItem.model_validate(i) for i in dashboard.timeline(db, auth.user_id, limit)])
+    return views.timeline(db, auth.user_id, limit)

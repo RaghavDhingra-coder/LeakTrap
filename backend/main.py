@@ -17,10 +17,12 @@ from backend.config import (
     APP_VERSION,
     configuration_problems,
     mask_database_url,
+    parse_forwarded_allow_ips,
     settings,
 )
 from backend.database import DatabaseNotConfiguredError
-from backend.routes import health, ingest
+from backend.mobile_http import MobileResponseHeaders, ProxyDiagnostics, install_access_log_privacy
+from backend.routes import health
 
 logging.basicConfig(
     level=settings.log_level,
@@ -30,8 +32,13 @@ logger = logging.getLogger("leaktrace")
 
 # Outside development, refuse to start with an unusable configuration, so a
 # deployment fails its health check instead of silently rejecting email.
+# Mobile mode exists only to be deployed publicly, so it is refused everywhere.
 _problems = configuration_problems(settings)
-if _problems and settings.environment != "development":
+if parse_forwarded_allow_ips(settings.forwarded_allow_ips) is None:
+    raise RuntimeError("Invalid LeakTrace configuration: FORWARDED_ALLOW_IPS must be an explicit IP/CIDR allowlist")
+if settings.dashboard_public and _problems:
+    raise RuntimeError("Invalid LeakTrace configuration: " + "; ".join(_problems))
+if _problems and (settings.environment != "development" or settings.app_mode == "mobile"):
     raise RuntimeError("Invalid LeakTrace configuration: " + "; ".join(_problems))
 for _problem in _problems:
     logger.warning("Configuration: %s", _problem)
@@ -43,8 +50,9 @@ class RootResponse(BaseModel):
     version: str
 
 
-# The public ingest deployment publishes no API documentation.
-_docs = {"docs_url": None, "redoc_url": None, "openapi_url": None} if settings.app_mode == "ingest" else {}
+# The public ingest and mobile deployments publish no API documentation.
+_public = settings.app_mode in ("ingest", "mobile")
+_docs = {"docs_url": None, "redoc_url": None, "openapi_url": None} if _public else {}
 app = FastAPI(
     title=f"{APP_NAME} API",
     description=APP_DESCRIPTION,
@@ -54,20 +62,43 @@ app = FastAPI(
 
 # Register routers here. Future phases add their routers alongside this one.
 # A public "ingest" deployment serves only what Cloudflare's email Worker needs;
-# accounts, the extension API and the dashboard stay on this machine.
-# The other routers are imported only in full mode, so an ingest deployment
-# never loads account, session or dashboard code.
+# a public "mobile" deployment serves only the mobile app's /mobile/v1 API.
+# Accounts and the extension API are served in full mode. The dashboard stays
+# loopback-only unless its explicit HTTPS public-origin mode is configured.
+# Routers are imported only in the modes that serve them, so a public deployment
+# never loads code it does not serve.
 if settings.app_mode == "ingest":
+    from backend.routes import ingest
+
     ROUTERS = (health.router, ingest.router)
+elif settings.app_mode == "mobile":
+    from backend.routes import mobile
+
+    ROUTERS = (health.router, mobile.router)
 else:
-    from backend.routes import auth, autofill, consent_receipts, dashboard, extension, matcher, signups, sms
+    from backend.routes import (
+        auth, autofill, consent_receipts, dashboard, extension, ingest, matcher, mobile, mobile_devices, signups, sms,
+    )
 
     ROUTERS = (
         health.router, auth.router, auth.account_router, extension.router, signups.router, matcher.router,
         ingest.router, dashboard.router, sms.router, consent_receipts.router, autofill.router,
+        mobile.router, mobile_devices.router,
     )
 for _router in ROUTERS:
     app.include_router(_router)
+
+# Mobile API responses are never cached and never content-sniffed, in every mode.
+app.add_middleware(MobileResponseHeaders)
+if settings.dashboard_public:
+    from backend.security import PublicDashboardOriginGuard
+
+    app.add_middleware(PublicDashboardOriginGuard, origin=settings.dashboard_public_origin)
+# Access logs never record query strings of mobile API requests (in mobile mode: of any request).
+install_access_log_privacy(strip_all=settings.app_mode == "mobile")
+if settings.app_mode == "mobile" and settings.proxy_diagnostics:  # refused in production at startup
+    app.add_middleware(ProxyDiagnostics)
+    logger.warning("Proxy diagnostics are on: marked /health requests log their forwarding headers")
 
 
 @app.exception_handler(DatabaseNotConfiguredError)

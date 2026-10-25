@@ -47,6 +47,15 @@ def extension_token(session: Session, user: User, scopes=EXTENSION_SCOPES, hours
     return created.token
 
 
+def mobile_token(session: Session, user: User, scopes=("account:read",), days: int = 30) -> str:
+    from datetime import timedelta
+
+    created = auth_service.create_session(session, user.id, "mobile", " ".join(sorted(scopes)),
+                                          label="Test phone", lifetime=timedelta(days=days))
+    session.commit()
+    return created.token
+
+
 def fake_auth(app: FastAPI, user_id: int = 1, kind: str = "web", scopes=EXTENSION_SCOPES) -> None:
     """Unit tests only: act as a signed-in user without a database."""
     context = AuthContext(user_id=user_id, session_id=1, kind=kind, scopes=frozenset(scopes),

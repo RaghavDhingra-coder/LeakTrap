@@ -558,7 +558,7 @@
                   <label for="new-password">New password (at least 12 characters)</label>
                   <input id="new-password" name="new_password" type="password" autocomplete="new-password" minlength="12" required>
                 </div>
-                <p class="hint">Changing your password signs out your other sessions and disconnects your browser extensions.</p>
+                <p class="hint">Changing your password signs out your other sessions and disconnects your browser extensions and mobile devices.</p>
                 <div class="form-actions"><button type="submit" class="btn btn-primary">Change password</button></div>
               </form>
               <p id="password-status" class="status" aria-live="polite"></p>
@@ -568,6 +568,29 @@
               <div class="panel-head"><h3 id="settings-extensions">Connected browser extensions</h3></div>
               <p id="extensions-status" class="status" aria-live="polite"></p>
               <ul id="extensions-list" class="plain-list list-rows"></ul>
+            </section>
+
+            <section class="card panel" aria-labelledby="settings-devices">
+              <div class="panel-head"><h3 id="settings-devices">Connected mobile devices</h3></div>
+              <form id="device-code-form" class="form" novalidate>
+                <div class="field">
+                  <label for="device-code">Code shown in the LeakTrace app</label>
+                  <input id="device-code" name="code" type="text" autocomplete="off" autocapitalize="characters"
+                         spellcheck="false" minlength="8" maxlength="9" placeholder="ABCD-2345" required>
+                </div>
+                <div class="form-actions"><button type="submit" class="btn btn-secondary">Check code</button></div>
+              </form>
+              <div id="device-approval" hidden>
+                <p>Connect <strong id="device-approval-label"></strong> as a mobile device?</p>
+                <p class="hint">Only approve this if the same code is shown in the LeakTrace app on your device right now. For up to 30 days the device will be able to read your websites and aliases, email activity and timeline, and analyze, save and manage SMS investigations; you can revoke it here at any time.</p>
+                <div class="row">
+                  <button type="button" id="device-approve" class="btn btn-primary">Approve mobile device</button>
+                  <button type="button" id="device-cancel" class="btn btn-secondary">Cancel</button>
+                </div>
+              </div>
+              <p id="device-pair-status" class="status" aria-live="polite"></p>
+              <p id="devices-status" class="status" aria-live="polite"></p>
+              <ul id="devices-list" class="plain-list list-rows"></ul>
             </section>
 
             <section class="card panel" aria-labelledby="settings-privacy">
