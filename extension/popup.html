@@ -7,9 +7,10 @@
   <script type="module" src="popup.js"></script>
 </head>
 <body>
-  <header class="popup-header">
-    <div class="brand"><span class="brand-mark" aria-hidden="true">L</span><span>LeakTrace</span></div>
-    <button type="button" id="settings" class="secondary header-action">Settings</button>
+  <header>
+    <h1>LeakTrace</h1>
+    <p class="warning" role="note">Local development only. The backend has no user authentication.</p>
+    <p id="backend" class="hint"></p>
   </header>
 
   <main id="app">
@@ -22,37 +23,10 @@
       <button type="button" id="open-options">Open settings</button>
     </p>
 
-    <section class="site-card" aria-labelledby="site-heading">
-      <h1 id="site-heading" class="eyebrow">Current website</h1>
+    <section aria-labelledby="site-heading">
+      <h2 id="site-heading">This tab</h2>
       <p id="current-site" class="site">Reading the current tab…</p>
-      <div id="reputation-section" aria-labelledby="reputation-heading" hidden>
-        <h2 id="reputation-heading" class="sr-only">Community reports</h2>
-        <div id="reputation-result" role="status" aria-live="polite"></div>
-        <details id="reputation-details" class="reputation-details" hidden>
-          <summary>View report details</summary>
-          <div id="reputation-categories"></div>
-        </details>
-      </div>
     </section>
-
-    <div class="primary-actions">
-      <button type="button" id="report-website" hidden>Report this site</button>
-      <button type="button" id="open-dashboard" class="secondary">Dashboard</button>
-    </div>
-    <section id="report-panel" class="report-panel" aria-labelledby="report-heading" hidden>
-      <h2 id="report-heading">What did you notice?</h2>
-      <form id="report-form">
-        <label class="choice"><input type="radio" name="category" value="personal_marker_match" required> An unexpected email used the alias I gave this site</label>
-        <label class="choice"><input type="radio" name="category" value="suspicious_message_link" required> A suspicious SMS linked to this site</label>
-        <p class="hint">A report records your observation. It does not establish that this site leaked data or sent the message.</p>
-        <div class="row"><button type="submit">Review report</button><button type="button" id="report-cancel" class="secondary">Cancel</button></div>
-      </form>
-      <div id="report-confirm"></div>
-    </section>
-    <p id="report-status" class="status" role="status" aria-live="polite"></p>
-
-    <details id="site-tools" class="tool-disclosure"><summary>Site tools</summary>
-    <div class="tool-content">
 
     <section id="autofill-section" aria-labelledby="autofill-heading" hidden>
       <h2 id="autofill-heading">Autofill</h2>
@@ -68,8 +42,7 @@
     </section>
 
     <section id="signup-section" aria-labelledby="signup-heading">
-      <details id="signup-tool" class="tool-panel"><summary>Create a signup alias</summary>
-      <h2 id="signup-heading" class="sr-only">New signup marker</h2>
+      <h2 id="signup-heading">New signup marker</h2>
       <form id="signup-form">
         <label for="site-name">Website name</label>
         <input id="site-name" name="site_name" maxlength="255" autocomplete="off" required>
@@ -82,12 +55,10 @@
       <div id="signup-confirm"></div>
       <div id="signup-status" class="status" aria-live="polite"></div>
       <div id="signup-result"></div>
-      </details>
     </section>
 
     <section id="receipt-section" aria-labelledby="receipt-heading">
-      <details id="receipt-tool" class="tool-panel"><summary>Record consent</summary>
-      <h2 id="receipt-heading" class="sr-only">Consent receipt</h2>
+      <h2 id="receipt-heading">Consent receipt</h2>
       <p class="warning" role="note">A receipt records what you report. LeakTrace does not verify it, and it is not proof of legally valid consent or of a legal violation.</p>
       <div id="selected-signup"></div>
       <form id="receipt-form">
@@ -117,11 +88,12 @@
       </form>
       <div id="receipt-confirm"></div>
       <div id="receipt-status" class="status" aria-live="polite"></div>
-      </details>
     </section>
 
-    </div></details>
-    <footer><p id="backend" class="hint"></p><p class="footer-note">Local development only · Reports are observations, not proof of a breach.</p></footer>
+    <footer class="row">
+      <button type="button" id="open-dashboard" class="secondary">Open dashboard</button>
+      <button type="button" id="settings" class="secondary">Settings</button>
+    </footer>
   </main>
 </body>
 </html>

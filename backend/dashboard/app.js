@@ -22,8 +22,8 @@ const REASON_LABELS = {
   ambiguous_alias: "The recipient matched more than one alias, so it was not linked.",
 };
 const PAGE_TITLES = {
-  overview: "Home", websites: "Websites", inbox: "Inbox", sms: "Analyze SMS", receipts: "Consent receipts",
-  activity: "Activity", check: "Check email", settings: "Settings",
+  overview: "Overview", websites: "Websites & aliases", inbox: "Inbox", sms: "SMS analyzer", receipts: "Consent receipts",
+  activity: "Leak activity", check: "Match check", settings: "Settings",
 };
 const POLL_INTERVAL_MS = 30_000;
 const MAX_POLL_INTERVAL_MS = 5 * 60_000;
@@ -127,56 +127,6 @@ function notificationText(m) {
 function senderText(m) {
   if (m.sender_name && m.sender_email) return `${m.sender_name} <${m.sender_email}>`;
   return m.sender_name ?? m.sender_email ?? (m.sender_domain ? `someone at ${m.sender_domain}` : "Unknown sender");
-}
-
-function emailFinding(m) {
-  const assessment = m.sender_assessment;
-  if (assessment?.alias_attribution !== "matched") return null;
-  const site = m.site_name ?? m.site_domain;
-  const sender = m.sender_domain;
-  if (assessment.disclosure_status === "potential") return {
-    concern: true, text: `Possible third-party disclosure: email to the alias you gave ${site} names ${sender}. You marked this sender unexpected, and Cloudflare reported DMARC pass. The alias could still have been guessed or forwarded; this is not a confirmed leak.`,
-  };
-  if (assessment.sender_domain_status === "unreviewed") return {
-    concern: false, review: true, text: `Sender domain not yet verified: ${sender}. Review whether this is an expected sender for ${site}.`,
-  };
-  if (assessment.sender_authentication === "provider_dmarc_fail") return {
-    concern: false, review: true, text: `Cloudflare reported DMARC failure for ${sender}. The claimed sender may be spoofed; this is not evidence of a leak.`,
-  };
-  if (assessment.sender_domain_status === "unexpected_by_user") return {
-    concern: false, review: true, text: `You marked ${sender} unexpected. Its authenticity is not established, so review this message before drawing conclusions.`,
-  };
-  if (assessment.sender_domain_status === "expected_by_user") return {
-    concern: false, text: `${sender} is on your expected-sender list for ${site}. This preference does not authenticate the message.`,
-  };
-  return { concern: false, text: `Email reached the alias you gave ${site}. Sender identity is separate from that match.` };
-}
-
-function senderReviewControls(m, refresh) {
-  const relationship = m.sender_assessment?.sender_domain_status;
-  if (!m.signup_id || !m.sender_domain || !["unreviewed", "expected_by_user", "unexpected_by_user"].includes(relationship)) return null;
-  const controls = el("div", { class: "row sender-review-actions" });
-  for (const [reviewStatus, label] of [["expected", "Mark as expected"], ["unexpected", "Mark as unexpected"]]) {
-    if (relationship === `${reviewStatus}_by_user`) continue;
-    controls.append(el("button", { type: "button", class: "btn btn-secondary btn-sm", onclick: async (event) => {
-      const confirmed = await confirmAction({ title: `${label}: ${m.sender_domain}?`,
-        body: reviewStatus === "expected"
-          ? "Save this domain as an expected sender for this website. This does not authenticate its messages."
-          : "You are marking this sender as unexpected for this website's alias. This stays private and does not submit a public website report. A potential disclosure warning also requires provider-reported DMARC pass.",
-        confirmLabel: label, danger: false });
-      if (!confirmed) return;
-      const button = event.currentTarget;
-      button.disabled = true;
-      try {
-        await api(`${API}/signups/${encodeURIComponent(m.signup_id)}/sender-domains`, { method: "POST",
-          body: { domain: m.sender_domain, review_status: reviewStatus } });
-        toast(reviewStatus === "expected" ? "Sender saved as expected." : "Sender marked unexpected for review.");
-        await refresh();
-        await loadInbox();
-      } catch (error) { toast(error.message, "error"); button.disabled = false; }
-    } }, label));
-  }
-  return controls;
 }
 
 function reasonText(reason) {
@@ -628,19 +578,21 @@ async function loadOverview() {
   const cards = document.getElementById("overview-cards");
   const more = document.getElementById("overview-more");
   setStatus(section, "Loading…");
-  cards.replaceChildren(...Array.from({ length: 3 }, () => el("div", { "aria-hidden": "true" },
+  cards.replaceChildren(...Array.from({ length: 4 }, () => el("div", { "aria-hidden": "true" },
     el("span", { class: "skeleton w-40" }), el("span", { class: "skeleton w-60" }))));
   more.replaceChildren();
   document.getElementById("match-breakdown").replaceChildren(el("span", { class: "skeleton w-80" }));
   try {
     const d = await getJSON(`${API}/overview`);
     cards.replaceChildren(
-      metric("Unread messages", formatNumber(d.unread), { iconName: "inbox", hint: d.unread ? "Review in Inbox" : "You are up to date", highlight: d.unread > 0 }),
-      metric("Websites tracked", formatNumber(d.websites), { iconName: "globe" }),
-      metric("Messages received", formatNumber(d.emails_total), { iconName: "mail" }),
+      metric("Websites", formatNumber(d.websites), { iconName: "globe" }),
+      metric("Aliases", formatNumber(d.aliases), { iconName: "at",
+        hint: d.websites > d.aliases ? `${formatNumber(d.websites - d.aliases)} website${d.websites - d.aliases === 1 ? "" : "s"} without an alias` : null }),
+      metric("Emails received", formatNumber(d.emails_total), { iconName: "mail" }),
+      metric("Unread", formatNumber(d.unread), { iconName: "inbox", hint: d.unread ? "In your inbox" : null, highlight: d.unread > 0 }),
     );
     more.replaceChildren(...cardList([
-      ["Aliases", d.aliases], ["Nicknames", d.nicknames], ["Consent receipts", d.receipts], ["Investigations", d.investigations],
+      ["Nicknames", d.nicknames], ["Consent receipts", d.receipts], ["Investigations", d.investigations],
     ]));
     renderBreakdown(d);
     setUnreadBadge(d.unread);
@@ -755,8 +707,10 @@ async function loadWebsites() {
       el("td", {}, el("span", { class: "cell-title" }, s.site_name), s.site_domain ? el("span", { class: "cell-sub" }, s.site_domain) : null),
       el("td", {}, s.alias ? el("span", { class: "alias-cell" }, el("span", { class: "marker" }, s.alias), copyIconButton("alias", s.alias))
         : el("span", { class: "dim" }, "No alias")),
-      el("td", { class: "activity-cell" }, s.email_count ? `${formatNumber(s.email_count)} email${s.email_count === 1 ? "" : "s"}` : "No email yet",
-        s.receipt_count ? el("span", { class: "cell-sub" }, `${formatNumber(s.receipt_count)} receipt${s.receipt_count === 1 ? "" : "s"}`) : null),
+      el("td", {}, s.nickname ?? (s.real_name_required ? el("span", { class: "badge badge-neutral" }, "Real name required") : el("span", { class: "dim" }, "—"))),
+      el("td", { class: "time" }, formatTime(s.created_at)),
+      el("td", { class: "num" }, formatNumber(s.receipt_count)),
+      el("td", { class: "num" }, formatNumber(s.email_count)),
       el("td", { class: "actions" }, el("div", { class: "row" },
         el("button", { type: "button", class: "btn btn-secondary btn-sm", "aria-label": `Show details for ${s.site_name}`,
           onclick: () => showWebsite(s.id) }, "Details"),
@@ -778,42 +732,6 @@ async function loadWebsites() {
   }
 }
 
-function senderDomainManagement(signup) {
-  const input = el("input", { type: "text", name: "domain", maxlength: 253, placeholder: "mailer.example.com",
-    "aria-label": "Expected sender domain" });
-  const form = el("form", { class: "toolbar", onsubmit: async (event) => {
-    event.preventDefault();
-    const domain = reportableDomain(input.value);
-    if (!domain) { toast("Enter a valid sender domain.", "error"); input.focus(); return; }
-    const button = event.target.querySelector('button[type="submit"]');
-    button.disabled = true;
-    try {
-      await api(`${API}/signups/${encodeURIComponent(signup.id)}/sender-domains`, { method: "POST",
-        body: { domain, review_status: "expected" } });
-      toast(`${domain} saved as an expected sender. This does not authenticate its email.`);
-      await showWebsite(signup.id);
-    } catch (error) { toast(error.message, "error"); button.disabled = false; }
-  } }, input, el("button", { type: "submit", class: "btn btn-secondary btn-sm" }, "Add expected sender"));
-  return el("details", { class: "disclosure" }, el("summary", {}, "Expected sender domains"),
-    el("p", { class: "hint" }, "Add domains you recognize for this website. This preference does not verify who sent a message."),
-    ...(signup.sender_domains?.length ? signup.sender_domains.map((item) => el("div", { class: "row sender-domain-row" },
-      el("span", { class: "marker" }, item.domain),
-      el("span", { class: "hint" }, item.review_status === "expected" ? "Expected by you" : "Marked unexpected"),
-      el("button", { type: "button", class: "btn btn-ghost btn-sm", onclick: async (event) => {
-        const confirmed = await confirmAction({ title: `Remove review of ${item.domain}?`,
-          body: "Future messages from this domain will ask for review again.", confirmLabel: "Remove", danger: false });
-        if (!confirmed) return;
-        const button = event.currentTarget;
-        button.disabled = true;
-        try {
-          await api(`${API}/signups/${encodeURIComponent(signup.id)}/sender-domains/${encodeURIComponent(item.domain)}`, { method: "DELETE" });
-          toast("Sender review removed.");
-          await showWebsite(signup.id);
-        } catch (error) { toast(error.message, "error"); button.disabled = false; }
-      } }, "Remove"))) : [el("p", { class: "hint" }, "No sender domains reviewed yet.")]),
-    form);
-}
-
 async function showWebsite(id) {
   const panel = document.getElementById("website-detail");
   const body = document.getElementById("website-detail-body");
@@ -827,38 +745,17 @@ async function showWebsite(id) {
       ["Surname variant", d.surname_variant ?? "—"],
       ["Real name required", d.real_name_required ? "Yes" : "No"], ["Signed up", formatTime(d.created_at)],
     ];
-    const reportDomain = reportableDomain(d.site_domain);
-    const reportEvidence = d.emails.some((m) => eligibleMarkerReport(m) && reportableDomain(m.site_domain) === reportDomain);
-    const potential = d.emails.filter((m) => m.sender_assessment?.disclosure_status === "potential");
-    const review = d.emails.filter((m) => m.sender_assessment?.disclosure_status === "review");
     body.replaceChildren(
-      el("div", { class: "finding-summary" },
-        el("strong", {}, d.site_name),
-        el("p", {}, d.alias ? `You gave this site ${d.alias}.` : "No alias is saved for this site."),
-        el("p", { class: potential.length ? "finding-caution" : "hint" }, potential.length
-          ? `${potential.length} email${potential.length === 1 ? "" : "s"} need disclosure review: you marked the sender unexpected and Cloudflare reported DMARC pass. This is not proof of a leak.`
-          : review.length ? `${review.length} sender${review.length === 1 ? "" : "s"} need your review. A different domain alone is not evidence of a leak.`
-            : d.emails.length ? `${d.emails.length} email${d.emails.length === 1 ? "" : "s"} reached this site's alias.` : "No email has reached this alias yet.")),
-      reportDomain ? el("div", { class: "report-action" },
-        reportEvidence ? reportWebsiteButton(reportDomain, "personal_marker_match") :
-          el("button", { type: "button", class: "btn btn-secondary btn-sm", disabled: true }, "Report Website"),
-        el("p", { class: "hint" }, reportEvidence
-          ? "Report what you observed. Only the domain and finding type are sent."
-          : "Available when a matched message reaches this website’s tracked alias.")) : null,
+      el("dl", {}, ...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
       el("div", { class: "row detail-actions" }, d.alias ? copyButton("alias", d.alias) : null, d.nickname ? copyButton("nickname", d.nickname) : null,
         el("button", { type: "button", class: "btn btn-ghost btn-sm", onclick: () => deleteWebsite(d) }, icon("trash"), "Delete website")),
-      el("details", { class: "disclosure" }, el("summary", {}, "Website details"),
-        el("dl", {}, ...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)]))),
-      senderDomainManagement(d),
       el("h4", {}, "Consent receipts"),
       d.receipts.length ? list(d.receipts.map((r) => `${formatTime(r.recorded_at)} — ${ACTION_LABELS[r.action] ?? "Not recorded"}`
-        + `${r.evidence_basis === "user_reported" ? " · your record" : ""}`)) : el("p", { class: "hint" }, "None yet."),
+        + `${r.evidence_basis === "user_reported" ? " · user-reported (not verified)" : ""}`)) : el("p", { class: "hint" }, "None yet."),
       el("h4", {}, "Email received at this alias"),
       d.emails.length ? list(d.emails.map((m) => el("div", {},
         el("span", {}, formatTime(m.received_at), " ", statusBadge(m.status),
           m.sender_domain ? ` from ${m.sender_domain} (claimed)` : ""),
-        emailFinding(m) ? el("p", { class: emailFinding(m).concern ? "finding-caution" : "hint" }, emailFinding(m).text) : null,
-        senderReviewControls(m, () => showWebsite(d.id)),
         ...exposureCards(m.exposure)))) : el("p", { class: "hint" }, "None yet."),
       el("h4", {}, "SMS investigations"),
       d.sms_investigations?.length ? el("ul", {}, ...d.sms_investigations.map((m) => el("li", {},
@@ -956,7 +853,7 @@ function actionLabel(action) {
 }
 
 function sourceLabel(r) {
-  return r.evidence_basis === "user_reported" ? "Recorded by you" : "Unknown source";
+  return r.evidence_basis === "user_reported" ? "Manual · user-reported (not verified)" : "Unknown source";
 }
 
 async function loadReceipts() {
@@ -967,12 +864,17 @@ async function loadReceipts() {
   try {
     const page = await getJSON(`/consent-receipts?${new URLSearchParams({ limit: PAGE_SIZE, offset: state.offsets.receipts })}`);
     body.replaceChildren(...page.items.map((r) => {
+      const kept = [r.source_url ? "URL" : null, r.content_hash ? "hash" : null,
+        r.notice_text_stored ? "notice text" : null, r.consent_text_stored ? "consent wording" : null,
+        r.notice_version ? "version" : null].filter(Boolean).join(", ") || "none";
       return el("tr", {},
         el("td", { class: "time" }, formatTime(r.recorded_at)),
-        el("td", {}, r.site_name ? siteLabel(r.site_name, r.site_domain) : el("span", { class: "dim" }, "Website removed")),
-        el("td", {}, actionLabel(r.action)),
+        el("td", {}, r.site_name ? siteLabel(r.site_name, r.site_domain) : el("span", { class: "dim" }, "Signup deleted")),
+        el("td", {}, el("span", { class: "badge badge-neutral" }, actionLabel(r.action))),
+        el("td", {}, sourceLabel(r)),
+        el("td", {}, kept),
         el("td", { class: "actions" }, el("button", { type: "button", class: "btn btn-secondary btn-sm",
-          "aria-label": `View receipt ${r.id}`, onclick: () => showReceiptDetail(r.id) }, "View details")));
+          "aria-label": `Show details for receipt ${r.id}`, onclick: () => showReceiptDetail(r.id) }, "Details")));
     }));
     renderPager("receipts", page, loadReceipts);
     if (page.total === 0) {
@@ -998,7 +900,7 @@ async function showReceiptDetail(id) {
       ["Reported action", actionLabel(r.action)],
       ["Source", sourceLabel(r)],
       ["Recorded by LeakTrace (server time)", formatTime(r.recorded_at)],
-      ["Reported event time", r.reported_occurred_at ? formatTime(r.reported_occurred_at) : "Not reported"],
+      ["Reported event time (unverified)", r.reported_occurred_at ? formatTime(r.reported_occurred_at) : "Not reported"],
       ["Notice URL (not fetched)", r.source_url ?? "—"],
       ["Notice version", r.notice_version ?? "—"],
       ["Notice hash", r.content_hash ? el("span", { class: "marker" }, r.content_hash) : "—"],
@@ -1027,9 +929,6 @@ async function createReceipt(event) {
   event.preventDefault();
   const form = event.target;
   const status = document.getElementById("receipt-form-status");
-  const submit = form.querySelector('[type="submit"]');
-  if (submit.disabled) return;
-  submit.disabled = true;
   status.className = "status";
   markInvalid(form, [], "receipt-form-status");
   status.textContent = "Saving…";
@@ -1059,8 +958,6 @@ async function createReceipt(event) {
     status.textContent = error.message;
     status.classList.add("error");
     markInvalid(form, error.fields, "receipt-form-status");
-  } finally {
-    submit.disabled = false;
   }
 }
 
@@ -1094,7 +991,6 @@ function inboxStatusBadge(m) {
 
 function inboxCard(m, { compact = false } = {}) {
   const title = m.tracked ? (m.subject ?? "(no subject)") : "Recorded before inbox tracking";
-  const finding = emailFinding(m);
   const meta = [
     el("span", { class: "time" }, formatTime(m.received_at)),
     el("span", {}, m.site_name ? siteLabel(m.site_name, m.site_domain) : "No website"),
@@ -1107,17 +1003,12 @@ function inboxCard(m, { compact = false } = {}) {
         m.unread ? el("span", { class: "sr-only" }, "Unread. ") : null,
         el("strong", { class: "card-title" }, title),
         inboxStatusBadge(m)),
-      el("p", { class: `card-line${finding?.concern ? " finding-caution" : finding?.review ? " finding-review" : ""}` }, finding?.text
-        ?? (m.tracked && m.status !== "unmatched" ? notificationText(m) : reasonText(m.status_reason) ?? "")),
+      el("p", { class: "card-line" }, m.tracked && m.status !== "unmatched" ? notificationText(m) : reasonText(m.status_reason) ?? ""),
       el("p", { class: "card-line hint" }, m.tracked ? `From ${senderText(m)}` : "Sender and subject were not stored for this record."),
       el("p", { class: "card-meta hint" }, ...meta.filter(Boolean)),
       ...exposureCards(m.exposure),
-      el("div", { class: "card-foot" }, el("button", { type: "button", class: "btn btn-secondary btn-sm",
-        "aria-label": `View details: ${title}`, onclick: () => {
-          if (compact) selectTab(document.getElementById("tab-inbox"));
-          showInboxDetail(m.id);
-        } }, "View details"),
-        !compact && eligibleMarkerReport(m) ? reportWebsiteButton(reportableDomain(m.site_domain), "personal_marker_match") : null)));
+      compact ? null : el("div", { class: "card-foot" }, el("button", { type: "button", class: "btn btn-secondary btn-sm",
+        "aria-label": `Open message: ${title}`, onclick: () => showInboxDetail(m.id) }, "Open"))));
 }
 
 const INBOX_EMPTY = {
@@ -1199,14 +1090,9 @@ async function showInboxDetail(id) {
       refreshUnread();
     }
     body.replaceChildren(
-      emailFinding(d) ? el("div", { class: `finding-summary${emailFinding(d).concern ? " finding-attention" : ""}` },
-        el("strong", {}, d.site_name ?? d.site_domain), el("p", {}, emailFinding(d).text),
-        senderReviewControls(d, () => showInboxDetail(d.id))) : null,
-      eligibleMarkerReport(d) ? reportWebsiteButton(reportableDomain(d.site_domain), "personal_marker_match") : null,
-      el("details", { class: "disclosure" }, el("summary", {}, "Message details"),
-        el("dl", {}, ...inboxDetailRows(d).flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
-        ...exposureCards(d.exposure),
-        el("p", { class: "hint" }, "A linked message does not prove that a website leaked or shared your data.")));
+      ...exposureCards(d.exposure),
+      el("dl", {}, ...inboxDetailRows(d).flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
+      el("p", { class: "notice", role: "note" }, "A message linked to a website is not proof that the website leaked, sold or shared your data."));
     unreadButton.hidden = !d.tracked;
     replaceCard(d);
   } catch (error) {
@@ -1397,10 +1283,9 @@ function candidateCard(c, { saved = null } = {}) {
       confirmedHere ? sourceBadge("confirmed") : sourceBadge(c.status),
       rejected ? el("span", { class: "badge badge-inbox-failed" }, "You rejected this") : null),
     c.domain && c.domain !== c.name ? el("p", { class: "hint marker" }, c.domain) : null,
-    related, actions.children.length ? actions : null,
-    el("details", { class: "disclosure disclosure-compact" }, el("summary", {}, "Why this source?"),
-      el("ul", { class: "signals" }, ...signals.map(signalItem)),
-      c.unknowns?.length ? [el("h4", {}, "What remains unknown"), list(c.unknowns)] : null));
+    el("h4", {}, "Evidence"), el("ul", { class: "signals" }, ...signals.map(signalItem)),
+    c.unknowns?.length ? [el("h4", {}, "What remains unknown"), list(c.unknowns)] : null,
+    related, actions.children.length ? actions : null);
 }
 
 function entityRow(e) {
@@ -1437,14 +1322,14 @@ function renderSmsAnalysis(a) {
   const result = document.getElementById("sms-result");
   const overview = el("div", { class: "sms-summary" },
     el("div", { class: "result-summary" }, sourceBadge(a.status), el("span", { class: "hint" }, SOURCE_EXPLAINED[a.status])),
-    el("details", { class: "disclosure disclosure-compact" }, el("summary", {}, "Analysis details"), el("dl", { class: "details" },
+    el("dl", { class: "details" },
       el("dt", {}, "Sender"), el("dd", {}, a.sender ? `${a.sender.display} (${a.sender.type.replace("_", " ")})` : "Not given"),
       el("dt", {}, "Received"), el("dd", {}, a.received_at ? formatTime(a.received_at) : "Not given"),
       a.label ? [el("dt", {}, "Where"), el("dd", {}, a.label)] : null,
       el("dt", {}, "Services"), el("dd", {}, a.candidates.map((c) => c.name).join(", ") || "None identified"),
       el("dt", {}, "Links and domains"), el("dd", {}, a.entities.filter((e) => ["url", "domain"].includes(e.type)).map((e) => e.display).join(", ") || "None"),
       el("dt", {}, "Email domains"), el("dd", {}, [...new Set(a.entities.filter((e) => e.type === "email").map((e) => e.display.split("@")[1]))].join(", ") || "None")),
-    a.sender_notes.length ? list(a.sender_notes) : null));
+    a.sender_notes.length ? list(a.sender_notes) : null);
   const candidates = a.candidates.length ? a.candidates.map((c) => candidateCard(c, { saved: state.sms.saved }))
     : [el("div", { class: "missing" }, el("h4", {}, "Why no source is suggested"), list(a.missing),
       el("p", { class: "hint" }, "If you know which website this relates to, save the investigation and link it to one of your websites."))];
@@ -1467,13 +1352,8 @@ function renderSmsAnalysis(a) {
       list(a.risk.next_steps), el("p", {}, a.risk.notice))
       : el("p", {}, "No scam assessment is stored for this investigation."),
     a.warnings.length ? el("div", { class: "notice", role: "note" }, list(a.warnings)) : null,
-    ["high", "moderate"].includes(a.risk?.risk_level) && a.entities.some((e) => smsReportDomain(e))
-      ? el("section", {}, el("h3", { class: "section-title" }, "Report a link from this message"),
-        el("p", { class: "hint" }, "A link appearing in a suspicious SMS does not establish that its website is malicious or leaked data."),
-        ...[...new Set(a.entities.map((e) => smsReportDomain(e)).filter(Boolean))].map((domain) =>
-          el("div", {}, el("strong", {}, domain), reportWebsiteButton(domain, "suspicious_message_link")))) : null,
     el("h3", { class: "section-title" }, "Possible sources"), ...candidates,
-    el("details", { class: "disclosure" }, el("summary", {}, `Details found in message (${a.entities.length})`),
+    el("h3", { class: "section-title" }, "Personal and other details found"),
     a.entities.length ? el("div", { class: "table-wrap" }, el("table", { class: "table" },
       el("caption", { class: "sr-only" }, "Details found in the message"),
       el("thead", {}, el("tr", {}, ...["Type", "Detail", "Certainty", "Relation to your records", "Correction"].map((h, i) =>
@@ -1482,7 +1362,7 @@ function renderSmsAnalysis(a) {
       : el("p", { class: "hint" }, "No details were found."),
     addForm,
     el("p", { class: "hint unavailable" }, icon("info"), " Adding a phone number to your tracked details is not available yet: LeakTrace has no storage for phone numbers."),
-    el("h4", {}, "Message (sensitive values hidden)"), el("div", { class: "prewrap" }, a.redacted_text)),
+    el("h3", { class: "section-title" }, "Message (sensitive values hidden)"), el("div", { class: "prewrap" }, a.redacted_text),
     smsSaveBar(),
     el("p", { class: "notice", role: "note" }, a.notice),
     el("details", {}, el("summary", {}, "Limitations"), list(a.limitations)));
@@ -1517,9 +1397,6 @@ function smsSavedBar(saved) {
 
 async function saveSms() {
   const section = document.getElementById("view-sms");
-  const button = document.getElementById("sms-save");
-  if (button.disabled) return;
-  button.disabled = true;
   try {
     const body = { ...state.sms.request, store_text: document.getElementById("sms-store-text").checked };
     const r = await api(`${API}/sms/investigations`, { method: "POST", body });
@@ -1531,7 +1408,6 @@ async function saveSms() {
     setStatus(section, "");
   } catch (error) {
     setStatus(section, error.message, true);
-    button.disabled = false;
   }
 }
 
@@ -1736,20 +1612,9 @@ async function loadCalls() {
         el("h4", {}, "Supporting evidence"),
         el("ul", {}, ...call.candidates.flatMap((c) => c.signals.map((s) =>
           el("li", {}, `${c.name}: ${s.explanation}`)))),
-        el("button", { type: "button", class: "btn btn-secondary btn-sm", onclick: async (event) => {
-          const ok = await confirmAction({ title: "Delete saved call analysis?",
-            body: "The saved analysis will be removed. This cannot be undone.", confirmLabel: "Delete" });
-          if (!ok) return;
-          const button = event.currentTarget;
-          button.disabled = true;
-          try {
-            await api(`${API}/calls/${encodeURIComponent(call.id)}`, { method: "DELETE" });
-            toast("Saved call analysis deleted.");
-            await loadCalls();
-          } catch (error) {
-            button.disabled = false;
-            toast(error.message, "error");
-          }
+        el("button", { type: "button", class: "btn btn-secondary btn-sm", onclick: async () => {
+          await api(`${API}/calls/${encodeURIComponent(call.id)}`, { method: "DELETE" });
+          loadCalls();
         } }, "Delete saved call analysis")))));
     say("calls-status", page.total ? `Showing ${page.items.length} of ${page.total} saved analyses.` : "No saved call analysis.");
   } catch (error) {
@@ -1768,11 +1633,13 @@ async function loadEmails() {
     const page = await getJSON(`${API}/emails?${params}`);
     body.replaceChildren(...page.items.map((m) => el("tr", {},
       el("td", { class: "time" }, formatTime(m.received_at)),
-      el("td", {}, m.site_name ? siteLabel(m.site_name, m.site_domain) : el("span", { class: "dim" }, m.recipient_known ? "Known alias" : "Unknown alias"),
-        m.exposure?.length ? el("span", { class: "cell-sub exposure-inline" }, `Possible source: ${m.exposure.map((x) => x.site_name).join(", ")}`) : null),
       el("td", {}, statusBadge(m.status)),
+      el("td", {}, m.alias ?? "—"),
+      el("td", {}, m.site_name ? siteLabel(m.site_name, m.site_domain) : el("span", { class: "dim" }, m.recipient_known ? "Known alias" : "Unknown alias"),
+        m.exposure?.length ? el("span", { class: "exposure-inline" }, ` · Possible source: ${m.exposure.map((x) => x.site_name).join(", ")}`) : null),
+      el("td", {}, m.sender_domain ? el("span", { class: "marker" }, m.sender_domain) : "—"),
       el("td", { class: "actions" }, el("button", { type: "button", class: "btn btn-secondary btn-sm",
-        "aria-label": `View email details ${m.id}`, onclick: () => showEmailDetail(m.id) }, "View details")))));
+        "aria-label": `Show match details for email ${m.id}`, onclick: () => showEmailDetail(m.id) }, "Details")))));
     renderPager("emails", page, loadEmails);
     if (page.total === 0) {
       const message = state.emailStatus ? "No email with this match status." : "No email received at your aliases yet.";
@@ -1800,13 +1667,10 @@ async function showEmailDetail(id) {
       ["Sender domain (claimed)", d.sender_domain ?? "—"],
     ];
     body.replaceChildren(
-      emailFinding(d) ? el("div", { class: `finding-summary${emailFinding(d).concern ? " finding-attention" : ""}` },
-        el("strong", {}, d.site_name ?? d.site_domain), el("p", {}, emailFinding(d).text),
-        senderReviewControls(d, () => showEmailDetail(d.id))) : null,
+      el("p", { class: "notice", role: "note" }, d.notice),
       ...exposureCards(d.exposure),
       el("dl", {}, ...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
       el("p", { class: "hint" }, d.stored_details),
-      eligibleMarkerReport(d) ? reportWebsiteButton(reportableDomain(d.site_domain), "personal_marker_match") : null,
       el("h4", {}, "Limitations"), list(d.limitations));
   } catch (error) {
     body.replaceChildren(el("p", { class: "error", role: "alert" }, error.message));
@@ -1840,63 +1704,6 @@ async function loadInvestigations() {
   }
 }
 
-// ---------- community website reports ----------
-
-function reportWebsiteButton(domain, category) {
-  const button = el("button", { type: "button", class: "btn btn-secondary btn-sm" }, "Report Website");
-  const status = el("span", { class: "hint", role: "status" });
-  button.addEventListener("click", async () => {
-    if (button.disabled) return;
-    button.disabled = true;
-    const label = category === "personal_marker_match" ? "A tracked marker appeared in a message" : "Link appeared in a suspicious SMS";
-    const confirmed = await confirmAction({ title: `Report ${domain}?`,
-      body: `Send only the domain ${domain} and category “${label}”. No message, email, transcript, or other content will be sent. A report records your observation; it does not prove that the website leaked data or is malicious.`,
-      confirmLabel: "Submit report", danger: false });
-    if (!confirmed) { button.disabled = false; return; }
-    status.textContent = "Submitting…";
-    try {
-      const saved = await api("/website-reports", { method: "POST", body: { domain, category } });
-      status.textContent = saved.already_reported ? "Already reported by you." : "Your report was added.";
-      button.textContent = "Reported";
-    } catch (error) {
-      status.textContent = error.message;
-      status.setAttribute("role", "alert");
-      button.disabled = false;
-    }
-  });
-  return el("div", { class: "row" }, button, status);
-}
-
-function reportableDomain(value) {
-  if (typeof value !== "string" || /[\s/:@?#]/.test(value)) return null;
-  try {
-    const domain = new URL(`http:${"//"}${value}`).hostname.toLowerCase().replace(/\.$/, "");
-    const labels = domain.split(".");
-    if (domain.length > 253 || labels.length < 2 || /^\d+$/.test(labels.at(-1))
-        || !labels.every((label) => /^(?!-)[a-z0-9-]{1,63}(?<!-)$/.test(label))) return null;
-    return domain;
-  } catch { return null; }
-}
-
-function eligibleMarkerReport(item) {
-  return item?.status === "matched" && Number.isSafeInteger(item.signup_id)
-    && Boolean(item.alias) && Boolean(reportableDomain(item.site_domain));
-}
-
-function smsReportDomain(entity) {
-  if (!["url", "domain"].includes(entity?.type) || entity.excluded || entity.certainty === "user_added") return null;
-  try {
-    const url = new URL(entity.display);
-    if (["http:", "https:"].includes(url.protocol)) return reportableDomain(url.hostname);
-  } catch { /* a bare domain */ }
-  return reportableDomain(entity.display);
-}
-
-function eligibleCheckReport(result, match) {
-  return result.status === "matched" && Boolean(reportableDomain(match.site_domain))
-    && match.signals?.some((signal) => ["alias_exact", "nickname_exact", "surname_variant_exact"].includes(signal.type));
-}
-
 // ---------- match check ----------
 
 async function runCheck(event) {
@@ -1918,9 +1725,7 @@ async function runCheck(event) {
       ? [emptyState({ iconName: "shield", title: "No match", text: "None of your websites match these clues." })]
       : r.matches.map((m) => el("article", { class: "result" },
         el("h4", {}, `${siteLabel(m.site_name, m.site_domain)} — confidence: ${m.confidence}`),
-        list(m.signals.map((s) => `${s.type}: ${s.explanation}`)),
-        eligibleCheckReport(r, m)
-          ? reportWebsiteButton(reportableDomain(m.site_domain), "personal_marker_match") : null));
+        list(m.signals.map((s) => `${s.type}: ${s.explanation}`))));
     result.replaceChildren(
       el("div", { class: "result-summary" }, el("span", {}, "Result:"), statusBadge(r.status),
         el("span", { class: "hint" }, `confidence: ${r.confidence}`)),
@@ -2149,7 +1954,7 @@ function tabFromHash() {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  applyTheme(storedTheme() ?? "light");
+  applyTheme(storedTheme() ?? "dark");
   const tabs = [...document.querySelectorAll('[role="tab"]')];
   for (const tab of tabs) {
     tab.addEventListener("click", () => selectTab(tab));
@@ -2204,20 +2009,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("websites-search").requestSubmit();
   });
   document.getElementById("new-alias").addEventListener("click", openAliasDialog);
-  document.getElementById("overview-new-alias").addEventListener("click", openAliasDialog);
-  document.getElementById("overview-analyze").addEventListener("click", () => selectTab(document.getElementById("tab-sms")));
-  document.getElementById("overview-check").addEventListener("click", () => selectTab(document.getElementById("tab-check")));
   document.getElementById("alias-form").addEventListener("submit", createAlias);
   for (const button of document.querySelectorAll("[data-close-dialog]")) {
     button.addEventListener("click", () => button.closest("dialog").close());
   }
   document.getElementById("website-detail-close").addEventListener("click", () => { document.getElementById("website-detail").hidden = true; });
   document.getElementById("receipt-form").addEventListener("submit", createReceipt);
-  document.getElementById("receipt-new").addEventListener("click", () => {
-    selectTab(document.getElementById("tab-receipts"));
-    document.getElementById("receipt-create").open = true;
-    document.getElementById("receipt-signup").focus();
-  });
   document.getElementById("receipt-detail-close").addEventListener("click", () => { document.getElementById("receipt-detail").hidden = true; });
   document.getElementById("email-status").addEventListener("change", (event) => {
     state.emailStatus = event.target.value;

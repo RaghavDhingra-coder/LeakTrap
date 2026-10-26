@@ -1,16 +1,12 @@
 {
   "manifest_version": 3,
   "name": "LeakTrace (local development)",
-  "version": "0.3.0",
-  "description": "Create LeakTrace signup markers and see unverified community reports for the active website using a local LeakTrace backend.",
+  "version": "0.2.0",
+  "description": "Create LeakTrace signup markers, recall them to fill sign-up and login forms after you approve, and record consent receipts, using a LeakTrace backend running on this computer.",
   "minimum_chrome_version": "116",
   "action": {
     "default_title": "LeakTrace",
     "default_popup": "popup.html"
-  },
-  "background": {
-    "service_worker": "background.js",
-    "type": "module"
   },
   "options_ui": {
     "page": "options.html",
@@ -18,7 +14,6 @@
   },
   "permissions": [
     "activeTab",
-    "tabs",
     "scripting",
     "storage"
   ],

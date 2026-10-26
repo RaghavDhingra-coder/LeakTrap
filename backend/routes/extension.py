@@ -1,7 +1,7 @@
 """Browser extension connection: dashboard-approved pairing and token management.
 
 The extension never sees the user's password or web session. Tokens are
-scoped (signups:create, signups:lookup, receipts:create, reports:create), short-lived and
+scoped (signups:create, signups:lookup, receipts:create), short-lived and
 revocable from the dashboard or by the extension itself.
 """
 

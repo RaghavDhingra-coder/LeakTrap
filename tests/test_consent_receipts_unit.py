@@ -161,8 +161,8 @@ def test_dashboard_has_receipts_view_with_states_and_safe_rendering(local) -> No
     js = (DASHBOARD / "app.js").read_text()
     for state in ("Loading…", "No consent receipts yet.", "setStatus(section, error.message, true)"):
         assert state in js, state
-    assert "Recorded by you" in js
-    assert "Reported event time" in js and "Recorded by LeakTrace (server time)" in js
+    assert "user-reported (not verified)" in js
+    assert "Reported event time (unverified)" in js and "Recorded by LeakTrace (server time)" in js
     for unsafe in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
         assert unsafe not in js
     # No delete controls for receipts (DELETE is used only for the account and extension connections).

@@ -16,8 +16,6 @@ TABLES = {
     "complaint_drafts",
     "reports",
     "leak_edges",
-    "website_reports",
-    "sender_domain_reviews",
 }
 
 REQUIRED_COLUMNS = {
@@ -47,8 +45,6 @@ REQUIRED_COLUMNS = {
         "id", "user_id", "site_name", "description", "evidence", "status",
         "created_at", "updated_at",
     },
-    "website_reports": {"id", "domain", "category", "reporter_user_id", "reported_at", "verification_status"},
-    "sender_domain_reviews": {"id", "user_id", "signup_id", "domain", "review_status", "created_at"},
     "leak_edges": {
         "id", "user_id", "source_type", "source_id", "target_type", "target_id",
         "relationship_type", "evidence", "confidence", "created_at",
@@ -67,9 +63,6 @@ FOREIGN_KEYS = {
     ("complaint_drafts", "incident_id"): ("incidents.id", "SET NULL"),
     ("complaint_drafts", "consent_receipt_id"): ("consent_receipts.id", "SET NULL"),
     ("reports", "user_id"): ("users.id", "RESTRICT"),
-    ("website_reports", "reporter_user_id"): ("users.id", "RESTRICT"),
-    ("sender_domain_reviews", "user_id"): ("users.id", "RESTRICT"),
-    ("sender_domain_reviews", "signup_id"): ("signups.id", "RESTRICT"),
     ("leak_edges", "user_id"): ("users.id", "RESTRICT"),
 }
 
@@ -86,11 +79,6 @@ NOT_NULL_COLUMNS = {
     ("complaint_drafts", "status"),
     ("reports", "site_name"),
     ("reports", "status"),
-    ("website_reports", "domain"),
-    ("website_reports", "category"),
-    ("website_reports", "reporter_user_id"),
-    ("website_reports", "reported_at"),
-    ("website_reports", "verification_status"),
     ("leak_edges", "source_type"),
     ("leak_edges", "source_id"),
     ("leak_edges", "target_type"),
@@ -114,7 +102,7 @@ CASCADE_ALLOWED = {("user_sessions", "user_id"), ("extension_pairings", "user_id
 
 
 def test_all_models_exported() -> None:
-    assert len(models.__all__) == 15
+    assert len(models.__all__) == 13
     for name in models.__all__:
         assert getattr(models, name).__tablename__ in TABLES | ACCOUNT_TABLES
 
@@ -137,10 +125,7 @@ def test_foreign_keys(table_name: str, column: str) -> None:
     assert len(fks) == 1
     assert fks[0].target_fullname == target
     assert fks[0].ondelete == ondelete
-    if table_name in ("website_reports", "sender_domain_reviews"):
-        assert not table(table_name).columns[column].nullable
-    else:
-        assert table(table_name).columns[column].nullable
+    assert table(table_name).columns[column].nullable
 
 
 def test_no_cascading_deletes() -> None:
@@ -180,10 +165,7 @@ def test_leak_edge_endpoints_are_not_foreign_keys() -> None:
 
 @pytest.mark.parametrize(("table_name", "column"), sorted(NOT_NULL_COLUMNS))
 def test_required_columns_are_not_nullable(table_name: str, column: str) -> None:
-    if table_name == "website_reports":
-        assert not table(table_name).columns[column].nullable
-    else:
-        assert table(table_name).columns[column].nullable is False
+    assert table(table_name).columns[column].nullable is False
 
 
 def test_timestamp_columns_are_timezone_aware() -> None:

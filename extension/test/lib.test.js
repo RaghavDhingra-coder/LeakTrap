@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 import {
   ApiError, RECEIPT_ACTIONS, buildReceiptPayload, buildSignupPayload, copyText, createApi,
-  describePayload, hostnameFromTabUrl, normalizeDomain, policyUrlFromPage, reputationHostFromTabUrl, sha256Hex, validateBaseUrl,
+  describePayload, hostnameFromTabUrl, normalizeDomain, policyUrlFromPage, sha256Hex, validateBaseUrl,
 } from "../src/lib.js";
 
 const BASE = "http://127.0.0.1:8000";
@@ -212,44 +212,4 @@ test("copyText reports success and failure honestly", async () => {
   assert.equal(await copyText("x", { writeText: async () => { throw new Error("denied"); } }), false);
   assert.equal(await copyText("x", undefined), false);
   assert.equal(await copyText("", { writeText: async () => {} }), false);
-});
-
-
-test("reputation lookup sends only the exact visited hostname", async () => {
-  const host = reputationHostFromTabUrl("https://www.bücher.de/private?token=secret#section");
-  assert.equal(host, "www.xn--bcher-kva.de");
-  assert.equal(reputationHostFromTabUrl("https://127.0.0.1/path"), null);
-  const fetchImpl = fakeFetch(200, { domain: "xn--bcher-kva.de", report_count: 2, reporter_count: 2, unverified_count: 2, verified_count: 0,
-    categories: [{ category: "suspicious_message_link", unverified_count: 2, verified_count: 0 }] });
-  const result = await createApi(BASE, fetchImpl, "token").websiteReputation(host);
-  assert.equal(result.report_count, 2);
-  assert.equal(result.reporter_count, 2);
-  assert.equal(fetchImpl.calls[0].url, `${BASE}/website-reports/reputation?domain=xn--bcher-kva.de`);
-  assert.equal(fetchImpl.calls[0].init.method, "GET");
-  assert.equal(fetchImpl.calls[0].init.headers.authorization, "Bearer token");
-  assert.ok(!fetchImpl.calls[0].url.includes("private") && !fetchImpl.calls[0].url.includes("secret"));
-});
-
-
-test("www visit checks the base report and keeps other subdomains distinct", async () => {
-  assert.equal(reputationHostFromTabUrl("https://www.cricbuzz.com/live"), "www.cricbuzz.com");
-  assert.equal(normalizeDomain("www.cricbuzz.com"), "cricbuzz.com");
-  const fetchImpl = fakeFetch(200, { domain: "cricbuzz.com", report_count: 1, reporter_count: 1, unverified_count: 1,
-    verified_count: 0, categories: [{ category: "personal_marker_match", unverified_count: 1, verified_count: 0 }] });
-  const reputation = await createApi(BASE, fetchImpl, "token").websiteReputation("www.cricbuzz.com");
-  assert.equal(reputation.report_count, 1);
-  assert.equal(fetchImpl.calls[0].url, `${BASE}/website-reports/reputation?domain=cricbuzz.com`);
-  assert.equal(normalizeDomain("scores.cricbuzz.com"), "scores.cricbuzz.com");
-});
-
-test("website report sends only normalized domain and selected observation", async () => {
-  const fetchImpl = fakeFetch(201, { domain: "flipkart.com", category: "personal_marker_match", already_reported: false });
-  const report = await createApi(BASE, fetchImpl, "token").submitWebsiteReport("www.Flipkart.com", "personal_marker_match");
-  assert.equal(report.already_reported, false);
-  assert.equal(fetchImpl.calls[0].url, `${BASE}/website-reports`);
-  assert.equal(fetchImpl.calls[0].init.method, "POST");
-  assert.deepEqual(JSON.parse(fetchImpl.calls[0].init.body), { domain: "flipkart.com", category: "personal_marker_match" });
-  assert.equal(fetchImpl.calls[0].init.headers.authorization, "Bearer token");
-  await assert.rejects(() => createApi(BASE, fetchImpl, "token").submitWebsiteReport("flipkart.com", "confirmed_breach"));
-  assert.equal(fetchImpl.calls.length, 1);
 });

@@ -2,7 +2,6 @@
 // No browser-extension APIs here, so it can be tested with Node.
 
 export const RECEIPT_ACTIONS = ["accepted", "declined", "notice_only"];
-export const REPORT_CATEGORIES = ["personal_marker_match", "suspicious_message_link"];
 const MAX_SITE_NAME = 255;
 const MAX_NOTICE_TEXT = 20_000;
 const MAX_CONSENT_TEXT = 2_000;
@@ -46,20 +45,6 @@ export function normalizeDomain(value) {
   }
   if (/^\d+$/.test(labels.at(-1))) throw new Error("IP addresses are not accepted.");
   return domain;
-}
-
-/** Exact visited hostname for community reputation; do not collapse www or parent domains. */
-export function reputationHostFromTabUrl(url) {
-  if (typeof url !== "string") return null;
-  try {
-    const parsed = new URL(url);
-    if (!["http:", "https:"].includes(parsed.protocol)) return null;
-    const host = parsed.hostname.replace(/\.$/, "").toLowerCase();
-    const labels = host.split(".");
-    if (host.length > 253 || labels.length < 2 || !labels.every((label) => LABEL.test(label))
-        || /^\d+$/.test(labels.at(-1))) return null;
-    return host;
-  } catch { return null; }
 }
 
 /** Development backend URL: only http://127.0.0.1:<port> is allowed in this version. */
@@ -320,24 +305,6 @@ export function createApi(baseUrl, fetchImpl = globalThis.fetch, token = null) {
         throw new ApiError("The backend returned an unexpected lookup response.");
       }
       return body.items.map(parseRecalledSignup).filter((s) => s !== null && s.siteDomain === domain);
-    },
-    async websiteReputation(host) {
-      const domain = normalizeDomain(host);
-      const body = await call(`/website-reports/reputation?domain=${encodeURIComponent(domain)}`, { method: "GET" });
-      if (body.domain !== domain || !Number.isSafeInteger(body.report_count)
-          || !Number.isSafeInteger(body.reporter_count) || !Array.isArray(body.categories)) {
-        throw new ApiError("The backend returned an unexpected reputation response.");
-      }
-      return body;
-    },
-    async submitWebsiteReport(host, category) {
-      const domain = normalizeDomain(host);
-      if (!REPORT_CATEGORIES.includes(category)) throw new Error("Choose what you observed before reporting.");
-      const body = await call("/website-reports", { method: "POST", body: JSON.stringify({ domain, category }) });
-      if (body.domain !== domain || body.category !== category || typeof body.already_reported !== "boolean") {
-        throw new ApiError("The backend returned an unexpected report response.");
-      }
-      return body;
     },
     async createReceipt(payload) {
       const body = await call("/consent-receipts", { method: "POST", body: JSON.stringify(payload) });

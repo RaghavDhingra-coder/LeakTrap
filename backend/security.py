@@ -30,7 +30,7 @@ SESSION_COOKIE = "lt_session"
 CSRF_HEADER = "x-csrf-token"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
-EXTENSION_SCOPES = frozenset({"signups:create", "signups:lookup", "receipts:create", "reports:create"})
+EXTENSION_SCOPES = frozenset({"signups:create", "signups:lookup", "receipts:create"})
 
 # Every permission a mobile token can ever carry, one per future mobile API area.
 MOBILE_SCOPES = frozenset({
