@@ -56,6 +56,21 @@ class DashboardSignupPage(BaseModel):
     offset: int
 
 
+class SenderAssessment(BaseModel):
+    alias_attribution: Literal["matched", "not_matched"]
+    sender_domain_status: Literal["website_domain", "expected_by_user", "unexpected_by_user", "unreviewed", "missing"]
+    sender_authentication: Literal["provider_dmarc_pass", "provider_dmarc_fail", "not_established"]
+    disclosure_status: Literal["none", "review", "potential"]
+    confirmed_leak: bool = Field(description="Always false: no email metadata can confirm a data leak.")
+    evidence: list[str]
+    limitations: list[str]
+
+
+class SenderDomainReviewItem(BaseModel):
+    domain: str
+    review_status: Literal["expected", "unexpected"]
+
+
 class DashboardEmail(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -69,6 +84,7 @@ class DashboardEmail(BaseModel):
     sender_name: str | None = Field(description="Untrusted From display name.")
     sender_email: str | None = Field(description="Untrusted From address, or envelope sender.")
     auth_results: str | None = Field(description="Reported by the inbound provider; not independent sender verification.")
+    sender_assessment: SenderAssessment
 
     id: int
     received_at: datetime
@@ -127,6 +143,7 @@ class SignupDetailResponse(BaseModel):
     receipts: list[SignupReceipt] = Field(description="Most recent 20.")
     emails: list[DashboardEmail] = Field(description="Most recent 20.")
     sms_investigations: list[SignupSms] = Field(default_factory=list, description="Saved SMS investigations that suggested or confirmed this website; most recent 20.")
+    sender_domains: list[SenderDomainReviewItem] = Field(default_factory=list)
     notice: str = NOT_PROOF
 
 
@@ -188,6 +205,7 @@ class InboxItem(BaseModel):
     match_status: str | None
     match_confidence: str | None
     exposure: list[ExposureSignal]
+    sender_assessment: SenderAssessment
 
 
 class InboxPage(BaseModel):

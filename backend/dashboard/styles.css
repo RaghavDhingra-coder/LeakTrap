@@ -1,5 +1,5 @@
-/* LeakTrace dashboard. Dark is the primary theme; light is selected in
-   Settings > Appearance (stored per browser). No external fonts or assets:
+/* LeakTrace dashboard. Light is the default theme; appearance is stored per
+   browser. No external fonts or assets:
    the page's Content-Security-Policy allows only this stylesheet. */
 
 :root, :root[data-theme="dark"] {
@@ -247,6 +247,26 @@ label { font-weight: 500; font-size: 0.8125rem; color: var(--text-2); }
 .cards-compact > div { border: none; box-shadow: none; border-radius: 0; padding: 4px 16px; border-left: 1px solid var(--border); background: transparent; }
 .cards-compact > div:first-child { border-left: none; padding-left: 0; }
 .cards-compact dd { font-size: 1.3rem; }
+.quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 24px; }
+.disclosure { margin: 14px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 0 18px; }
+.disclosure > summary { cursor: pointer; list-style: none; display: flex; align-items: center; min-height: 46px; gap: 10px; font-weight: 600; color: var(--text-2); }
+.disclosure > summary::-webkit-details-marker { display: none; }
+.disclosure > summary::after { content: "+"; margin-left: auto; color: var(--muted); font-size: 1.2rem; font-weight: 400; }
+.disclosure[open] > summary::after { content: "−"; }
+.disclosure > summary:hover { color: var(--text); }
+.disclosure[open] > summary { border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.disclosure-compact { margin: 4px 0; padding: 0 12px; background: var(--surface-2); }
+.disclosure-compact > summary { min-height: 38px; font-size: 0.84rem; }
+.finding-summary { background: var(--surface-2); border-radius: var(--radius); padding: 16px 18px; margin: 0 0 16px; }
+.finding-summary strong { display: block; font-size: 1rem; margin-bottom: 5px; }
+.finding-summary p:last-child { margin-bottom: 0; }
+.finding-attention { background: var(--warn-soft); }
+.finding-caution { color: var(--warn); font-weight: 550; }
+.finding-review { color: var(--accent); }
+.sender-review-actions { margin-top: 12px; }
+.sender-domain-row { padding: 7px 0; border-bottom: 1px solid var(--border); }
+.candidate .disclosure { border: 0; border-top: 1px solid var(--border); border-radius: 0; padding: 0; background: transparent; }
+.settings .card > .disclosure { border: 0; border-radius: 0; background: transparent; margin: 0; padding: 0; }
 
 /* ---------- chart ---------- */
 .chart { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; height: 180px; align-items: end; padding-top: 22px; }
@@ -524,6 +544,8 @@ summary { cursor: pointer; color: var(--muted); font-size: 0.875rem; }
   .chart-axis span:nth-child(even) { visibility: hidden; }
   #sign-out span { display: none; }
   .toasts { left: 16px; right: 16px; bottom: 16px; width: auto; }
+  .quick-actions .btn { flex: 1 1 auto; }
+  .table-wrap table { min-width: 540px; }
 }
 @media (max-width: 480px) {
   .detail dl { grid-template-columns: minmax(0, 1fr); gap: 2px; }

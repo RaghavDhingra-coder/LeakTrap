@@ -94,7 +94,7 @@ def test_alias_plus_subject_nickname_and_third_party_sender(client, signups) -> 
                    subject="Ocelot, your exclusive offer")
     [match] = result["matches"]
     assert {s["type"] for s in match["signals"]} == {"alias_exact", "nickname_exact"}
-    assert any("not associated with the site" in w for w in result["warnings"])
+    assert any("Review it before drawing conclusions" in w for w in result["warnings"])
 
 
 def test_conflicting_clues_are_ambiguous(client, signups) -> None:

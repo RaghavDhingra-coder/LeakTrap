@@ -14,8 +14,8 @@ from typing import Any
 from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from backend.models import ConsentReceipt, Incident, MailLog, Signup
-from backend.services import email_attribution
+from backend.models import ConsentReceipt, Incident, MailLog, SenderDomainReview, Signup
+from backend.services import email_attribution, sender_attribution
 from backend.services.email_attribution import alias_link as _alias_link
 from backend.services.ownership import owned_by
 
@@ -138,6 +138,7 @@ class SignupDetail:
     receipts: list[ConsentReceipt]
     emails: list["EmailRow"]
     sms: list[Incident]
+    sender_domains: list[SenderDomainReview]
 
 
 def get_signup_detail(session: Session, user_id: int, signup_id: int, recent: int = 20) -> SignupDetail | None:
@@ -154,9 +155,9 @@ def get_signup_detail(session: Session, user_id: int, signup_id: int, recent: in
         .order_by(MailLog.received_at.desc(), MailLog.id.desc()).limit(recent)
     ).all()
     from backend.services.sms_investigations import linked_to_signup
-    owned = _owned_signups(session, user_id)
-    return SignupDetail(signup, list(receipts), [_email_row(*row, owned) for row in emails],
-                        linked_to_signup(session, user_id, signup.id, recent))
+    reviews = sender_attribution.reviews_for_user(session, user_id)
+    return SignupDetail(signup, list(receipts), [_email_row(*row, reviews) for row in emails],
+                        linked_to_signup(session, user_id, signup.id, recent), reviews.get(signup.id, []))
 
 
 # ---------- email activity ----------
@@ -183,6 +184,7 @@ class EmailRow:
     sender_name: str | None
     sender_email: str | None
     auth_results: str | None
+    sender_assessment: dict
 
 
 def _email_query(user_id: int):
@@ -193,10 +195,11 @@ def _email_query(user_id: int):
     )
 
 
-def _email_row(log: MailLog, signup: Signup | None, owned_signups: list[Signup]) -> EmailRow:
+def _email_row(log: MailLog, signup: Signup | None, reviews: dict[int, list[SenderDomainReview]]) -> EmailRow:
     site_name = signup.site_name if signup else None
     site_domain = signup.site_domain if signup else None
     tracked = log.ingest_status is not None
+    assessment = sender_attribution.assess(log, signup, reviews.get(signup.id, []) if signup else [])
     return EmailRow(
         id=log.id, received_at=log.received_at, created_at=log.created_at,
         match_status=log.match_status, match_confidence=log.match_confidence,
@@ -205,16 +208,13 @@ def _email_row(log: MailLog, signup: Signup | None, owned_signups: list[Signup])
         status=_effective_status(log, site_name is not None),
         status_reason=_status_reason(log, site_name is not None), alias=log.alias,
         unread=log.ingest_status is not None and log.read_at is None,
-        exposure=email_attribution.email_exposure(log, signup, owned_signups),
+        exposure=email_attribution.email_exposure(log, signup, assessment),
         tracked=tracked, subject=log.subject if tracked else None,
         sender_name=log.sender_name if tracked else None,
         sender_email=log.sender if tracked else None,
         auth_results=log.auth_results if tracked else None,
+        sender_assessment=assessment,
     )
-
-
-def _owned_signups(session: Session, user_id: int) -> list[Signup]:
-    return list(session.scalars(select(Signup).where(owned_by(Signup.user_id, user_id))).all())
 
 
 def list_emails(
@@ -229,13 +229,13 @@ def list_emails(
     rows: Sequence = session.execute(
         query.order_by(MailLog.received_at.desc(), MailLog.id.desc()).limit(limit).offset(offset)
     ).all()
-    owned = _owned_signups(session, user_id)
-    return [_email_row(*row, owned) for row in rows], total or 0
+    reviews = sender_attribution.reviews_for_user(session, user_id)
+    return [_email_row(*row, reviews) for row in rows], total or 0
 
 
 def get_email(session: Session, user_id: int, mail_log_id: int) -> EmailRow | None:
     row = session.execute(_email_query(user_id).where(MailLog.id == mail_log_id)).first()
-    return _email_row(*row, _owned_signups(session, user_id)) if row else None
+    return _email_row(*row, sender_attribution.reviews_for_user(session, user_id)) if row else None
 
 
 # ---------- leak investigations (matcher incidents the user chose to record) ----------
@@ -323,6 +323,7 @@ class InboxRow:
     match_status: str | None
     match_confidence: str | None
     exposure: list[dict]
+    sender_assessment: dict
 
 
 def identity_label(nickname: str | None, surname: str | None, real_name_used: bool) -> tuple[str | None, str]:
@@ -343,11 +344,12 @@ def _inbox_query(user_id: int):
     )
 
 
-def _inbox_row(log: MailLog, signup: Signup | None, owned_signups: list[Signup]) -> InboxRow:
+def _inbox_row(log: MailLog, signup: Signup | None, reviews: dict[int, list[SenderDomainReview]]) -> InboxRow:
     tracked = log.ingest_status is not None
     status = _effective_status(log, signup is not None)
     reason = _status_reason(log, signup is not None)
     identity, kind = identity_label(signup.nickname, signup.surname_variant, signup.real_name_used) if signup else (None, "none")
+    assessment = sender_attribution.assess(log, signup, reviews.get(signup.id, []) if signup else [])
     # Message details exist only for rows recorded by inbox tracking; older
     # rows may hold sender or subject values that were never meant to be shown.
     return InboxRow(
@@ -359,7 +361,8 @@ def _inbox_row(log: MailLog, signup: Signup | None, owned_signups: list[Signup])
         sender_domain=log.sender_domain, subject=log.subject if tracked else None,
         auth_results=log.auth_results if tracked else None,
         match_status=log.match_status, match_confidence=log.match_confidence,
-        exposure=email_attribution.email_exposure(log, signup, owned_signups),
+        exposure=email_attribution.email_exposure(log, signup, assessment),
+        sender_assessment=assessment,
     )
 
 
@@ -378,13 +381,13 @@ def list_inbox(
         query = query.where(_status == filter_)
     total = session.scalar(select(func.count()).select_from(query.subquery()))
     rows = session.execute(query.order_by(MailLog.received_at.desc(), MailLog.id.desc()).limit(limit).offset(offset)).all()
-    owned = _owned_signups(session, user_id)
-    return [_inbox_row(*row, owned) for row in rows], total or 0, unread_count(session, user_id)
+    reviews = sender_attribution.reviews_for_user(session, user_id)
+    return [_inbox_row(*row, reviews) for row in rows], total or 0, unread_count(session, user_id)
 
 
 def get_inbox_item(session: Session, user_id: int, mail_log_id: int) -> InboxRow | None:
     row = session.execute(_inbox_query(user_id).where(MailLog.id == mail_log_id)).first()
-    return _inbox_row(*row, _owned_signups(session, user_id)) if row else None
+    return _inbox_row(*row, sender_attribution.reviews_for_user(session, user_id)) if row else None
 
 
 def set_read(session: Session, user_id: int, mail_log_id: int, read: bool) -> InboxRow | None:
@@ -429,8 +432,8 @@ def inbox_updates(session: Session, user_id: int, after_id: int | None, limit: i
         rows = session.execute(
             _inbox_query(user_id).where(_tracked, MailLog.id > after_id).order_by(MailLog.id.desc()).limit(limit)
         ).all()
-        owned = _owned_signups(session, user_id)
-        new = [_inbox_row(*row, owned) for row in rows]
+        reviews = sender_attribution.reviews_for_user(session, user_id)
+        new = [_inbox_row(*row, reviews) for row in rows]
     return InboxUpdates(unread_count(session, user_id), latest, new)
 
 

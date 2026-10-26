@@ -10,7 +10,7 @@
 <body class="options">
   <main>
     <h1>LeakTrace extension settings</h1>
-    <p class="warning" role="note"><strong>Development setting.</strong> This version only talks to a LeakTrace backend on this computer (http://127.0.0.1). The backend has no user authentication, so this is not a production-ready setup. Whatever database that backend uses receives the records you create.</p>
+    <p class="warning" role="note"><strong>Development setting.</strong> This version only talks to a LeakTrace backend on this computer (http://127.0.0.1). Connect this extension to your LeakTrace account to check community reports. The backend database receives records only when you confirm their creation.</p>
     <form id="settings-form">
       <label for="base-url">Local backend URL</label>
       <input id="base-url" name="base_url" type="url" placeholder="http://127.0.0.1:8000" autocomplete="off" required>
@@ -29,7 +29,7 @@
       <button type="button" id="disconnect" class="secondary" hidden>Disconnect</button>
     </div>
     <p id="pairing" class="hint" hidden></p>
-    <p class="hint">Connecting opens your LeakTrace dashboard, where you approve this extension while signed in. The extension never sees your password. Its access is limited to creating and looking up your aliases and recording consent receipts, expires after a few hours, and is kept in memory only (connect again after restarting the browser). You can revoke it from the dashboard.</p>
+    <p class="hint">Connecting opens your LeakTrace dashboard, where you approve this extension while signed in. The extension never sees your password. Its access is limited to creating and looking up aliases, recording consent receipts, and submitting website reports you confirm. Access expires after a few hours and is kept in memory only. You can revoke it from the dashboard.</p>
 
     <h2>Autofill</h2>
     <label class="inline"><input type="checkbox" id="autofill-enabled"> Offer to fill sign-up and login forms with my saved LeakTrace alias</label>

@@ -108,8 +108,8 @@ def test_alias_with_site_sender_warns_expected_mail() -> None:
 
 def test_alias_with_third_party_sender_warns_without_claiming_leak() -> None:
     result = score([SHOP], Clues(recipient="ab12@leaktrap.xyz", sender="deals@broker.example"))
-    warning = next(w for w in result.warnings if "not associated with the site" in w)
-    assert "does not prove" in warning
+    warning = next(w for w in result.warnings if "differs from the recorded website domain" in w)
+    assert "Review it before drawing conclusions" in warning
 
 
 def test_alias_without_site_domain_warns_cannot_compare() -> None:

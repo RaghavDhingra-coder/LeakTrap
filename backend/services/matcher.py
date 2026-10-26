@@ -171,9 +171,8 @@ def _candidate_warnings(candidate: Candidate, signup: SignupLike, clues: Clues) 
         ]
     if signup.site_domain:
         return [
-            f"For {label}, mail to this alias came from a domain not associated with the "
-            "site. That is consistent with the address having been shared, leaked or "
-            "guessed, but does not prove which."
+            f"For {label}, the claimed sender domain differs from the recorded website domain. "
+            "This sender may be a legitimate mail service or may be spoofed. Review it before drawing conclusions."
         ]
     return [
         f"{label.capitalize()} has no site domain recorded, so the sender cannot be "

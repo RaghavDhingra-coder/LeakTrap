@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Query, Request
+from pydantic import BaseModel, ConfigDict, field_validator
+from sqlalchemy import func, select
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import ValidationError
@@ -17,7 +19,10 @@ from sqlalchemy.orm import Session
 
 from backend.config import settings, valid_public_dashboard_origin
 from backend.database import get_db
-from backend.routes.common import read_limited_body, require_json, validation_error
+from backend.routes.common import parse_json, read_limited_body, require_json, validation_error
+from backend.models import MailLog, SenderDomainReview, Signup
+from backend.services.domains import normalize_domain
+from backend.services.ownership import owned_by
 from backend.routes import dashboard_views as views
 from backend.routes.dashboard_views import MAX_PAGE_SIZE, Limit, Offset  # MAX_PAGE_SIZE is re-exported for other routers
 from backend.schemas.dashboard import (
@@ -94,6 +99,17 @@ router = APIRouter(
 NOT_FOUND = HTTPException(404, views.SIGNUP_NOT_FOUND)
 
 
+class SenderDomainReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    domain: str
+    review_status: Literal["expected", "unexpected"]
+
+    @field_validator("domain")
+    @classmethod
+    def domain_name(cls, value: str) -> str:
+        return normalize_domain(value)
+
+
 @router.get("/api/calls", response_model=CallAnalysisPage)
 def get_calls(limit: int = Limit, offset: int = Offset,
               auth: AuthContext = Depends(require_user), db: Session = Depends(get_db)) -> CallAnalysisPage:
@@ -154,6 +170,66 @@ def get_signup(
     if detail is None:
         raise NOT_FOUND
     return detail
+
+
+@router.get("/api/signups/{signup_id}/sender-domains")
+def get_sender_domains(signup_id: int = PathParam(gt=0, le=MAX_BIGINT),
+                       auth: AuthContext = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
+    signup = db.scalar(select(Signup).where(Signup.id == signup_id, owned_by(Signup.user_id, auth.user_id)))
+    if signup is None:
+        raise NOT_FOUND
+    rows = db.scalars(select(SenderDomainReview).where(
+        SenderDomainReview.signup_id == signup_id, owned_by(SenderDomainReview.user_id, auth.user_id))
+        .order_by(SenderDomainReview.domain)).all()
+    return [{"domain": row.domain, "review_status": row.review_status} for row in rows]
+
+
+@router.post("/api/signups/{signup_id}/sender-domains")
+async def review_sender_domain(request: Request, signup_id: int = PathParam(gt=0, le=MAX_BIGINT),
+                               auth: AuthContext = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    data = await parse_json(request, SenderDomainReviewRequest, MAX_BODY_BYTES)
+    signup = db.scalar(select(Signup).where(Signup.id == signup_id, owned_by(Signup.user_id, auth.user_id)))
+    if signup is None:
+        raise NOT_FOUND
+    if data.review_status == "unexpected":
+        observed = db.scalar(select(MailLog.id).where(
+            MailLog.signup_id == signup_id, owned_by(MailLog.user_id, auth.user_id),
+            MailLog.ingest_status == "matched", func.lower(MailLog.alias) == func.lower(signup.alias),
+            MailLog.sender_domain == data.domain).limit(1))
+        if observed is None:
+            raise HTTPException(422, "This sender domain has not appeared at this website's alias.")
+    row = db.scalar(select(SenderDomainReview).where(
+        SenderDomainReview.signup_id == signup_id, owned_by(SenderDomainReview.user_id, auth.user_id),
+        SenderDomainReview.domain == data.domain))
+    if row is None:
+        count = db.scalar(select(func.count()).select_from(SenderDomainReview).where(
+            SenderDomainReview.signup_id == signup_id, owned_by(SenderDomainReview.user_id, auth.user_id))) or 0
+        if count >= 100:
+            raise HTTPException(422, "This website has too many reviewed sender domains.")
+        row = SenderDomainReview(user_id=auth.user_id, signup_id=signup_id, domain=data.domain,
+                                 review_status=data.review_status)
+        db.add(row)
+    else:
+        row.review_status = data.review_status
+    db.commit()
+    return {"domain": row.domain, "review_status": row.review_status}
+
+
+@router.delete("/api/signups/{signup_id}/sender-domains/{domain}", status_code=204)
+def remove_sender_domain(signup_id: int = PathParam(gt=0, le=MAX_BIGINT), domain: str = PathParam(max_length=253),
+                         auth: AuthContext = Depends(require_user), db: Session = Depends(get_db)) -> Response:
+    try:
+        domain = normalize_domain(domain)
+    except ValueError:
+        raise HTTPException(422, "Enter a valid sender domain.") from None
+    row = db.scalar(select(SenderDomainReview).join(Signup, Signup.id == SenderDomainReview.signup_id).where(
+        SenderDomainReview.signup_id == signup_id, SenderDomainReview.domain == domain,
+        owned_by(SenderDomainReview.user_id, auth.user_id), owned_by(Signup.user_id, auth.user_id)))
+    if row is None:
+        raise HTTPException(404, "Sender domain review not found")
+    db.delete(row)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/api/emails", response_model=DashboardEmailPage)

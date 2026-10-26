@@ -1,5 +1,5 @@
-// LeakTrace popup. Nothing is sent to the backend until the user reviews a
-// request and clicks Confirm (or, for alias recall, clicks "Find my alias").
+// LeakTrace popup. A bare hostname is checked for community reports when
+// opened. Creating signups or receipts still requires review and confirmation.
 // Autofill: when the popup opens on a website, the detector in
 // content/autofill.js is injected into that tab only (activeTab). It reports
 // form-field descriptions, never values, and fills only after the user clicks
@@ -7,7 +7,7 @@
 import {
   ApiError, RECONNECT_MESSAGE, addNeverSite, buildFillPlan, buildReceiptPayload, buildSignupPayload, canInspectTab, copyText,
   createApi, describePayload, describeScanStats, fillOptions, fillTargetCheck, hostnameFromTabUrl, normalizeNeverSites,
-  parseStoredAuth, policyUrlFromPage, removeNeverSite,
+  parseStoredAuth, policyUrlFromPage, removeNeverSite, reputationHostFromTabUrl,
 } from "./src/lib.js";
 import { definitionList, el, show } from "./src/dom.js";
 
@@ -191,7 +191,7 @@ async function reviewReceipt(event) {
       renderSelected();
       updateSignupMismatch();
       setStatus("receipt-status",
-        `Saved receipt #${receipt.id} for ${receipt.site_name ?? "the signup"} as user-reported (not verified).`, "ok");
+        `Saved your receipt #${receipt.id} for ${receipt.site_name ?? "the signup"}.`, "ok");
     } catch (error) {
       show($("receipt-confirm"));
       if (isUnauthorized(error)) await disconnected();
@@ -525,9 +525,103 @@ async function allowAgain() {
 function createFromAutofill() {
   $("site-name").value ||= state.host;
   $("site-domain").value = state.host;
+  $("site-tools").open = true;
+  $("signup-tool").open = true;
   $("signup-section").scrollIntoView({ block: "start" });
   $("site-name").focus();
   setStatus("signup-status", `Review and confirm to create a signup for ${state.host}. Nothing is created until you confirm.`);
+}
+
+// ---------- community reputation ----------
+
+function reportCategoryLabel(category) {
+  return { personal_marker_match: "Unexpected email to this site's alias",
+    suspicious_message_link: "Link in a suspicious SMS" }[category] ?? "Other reported observation";
+}
+
+function openReportForm() {
+  if (!state.host || !state.api || !state.auth) {
+    setStatus("report-status", "Connect LeakTrace in Settings to report this site.", "error");
+    return;
+  }
+  $("report-panel").hidden = false;
+  $("report-confirm").replaceChildren();
+  setStatus("report-status", "");
+  $("report-form").querySelector('input[name="category"]').focus();
+}
+
+function reviewWebsiteReport(event) {
+  event.preventDefault();
+  const category = new FormData(event.target).get("category");
+  if (!["personal_marker_match", "suspicious_message_link"].includes(category)) {
+    setStatus("report-status", "Choose what you observed.", "error");
+    return;
+  }
+  const confirm = el("button", { type: "button" }, "Submit report");
+  const edit = el("button", { type: "button", class: "secondary" }, "Edit");
+  confirm.addEventListener("click", async () => {
+    confirm.disabled = true;
+    edit.disabled = true;
+    $("report-website").disabled = true;
+    setBusy($("report-form"), true);
+    setStatus("report-status", "Submitting…");
+    try {
+      const result = await state.api.submitWebsiteReport(state.host, category);
+      setStatus("report-status", result.already_reported
+        ? "You already reported this observation." : "Your report was added.", "ok");
+      $("report-confirm").replaceChildren();
+      $("report-form").reset();
+      $("report-panel").hidden = true;
+      await loadReputation();
+    } catch (error) {
+      if (isUnauthorized(error)) await disconnected();
+      setStatus("report-status", error.status === 403
+        ? "Reconnect this extension in Settings to enable reporting."
+        : error.message, "error");
+      confirm.disabled = false;
+      edit.disabled = false;
+    } finally {
+      $("report-website").disabled = !state.auth;
+      setBusy($("report-form"), !state.auth);
+    }
+  });
+  edit.addEventListener("click", () => $("report-confirm").replaceChildren());
+  show($("report-confirm"), el("div", { class: "panel", role: "group", "aria-label": "Confirm website report" },
+    el("strong", {}, `Report ${state.host}?`),
+    el("p", {}, reportCategoryLabel(category)),
+    el("p", { class: "hint" }, "Only the domain and observation type are sent. No email or SMS content is uploaded."),
+    el("div", { class: "row" }, confirm, edit)));
+  confirm.focus();
+}
+
+async function loadReputation() {
+  const host = reputationHostFromTabUrl(state.tabUrl);
+  const section = $("reputation-section");
+  if (!host || !state.api || !state.auth) return;
+  section.hidden = false;
+  $("reputation-details").hidden = true;
+  show($("reputation-result"), el("p", { class: "hint" }, `Checking ${host}…`));
+  try {
+    const reputation = await state.api.websiteReputation(host);
+    if (!reputation.report_count) {
+      show($("reputation-result"), el("p", { class: "reputation-clear" }, "No community reports found."),
+        el("p", { class: "hint" }, "This does not guarantee the site is safe."));
+      return;
+    }
+    show($("reputation-result"), el("div", { class: "reputation-warning", role: "alert" },
+      el("strong", {}, `${reputation.reporter_count} ${reputation.reporter_count === 1 ? "person has" : "people have"} reported this site`),
+      el("p", {}, "See what people noticed below.")));
+    show($("reputation-categories"),
+      el("ul", { class: "category-list" }, ...reputation.categories.map((item) => el("li", {},
+        el("strong", {}, reportCategoryLabel(item.category)),
+        el("span", {}, `${item.unverified_count + item.verified_count} ${item.unverified_count + item.verified_count === 1 ? "report" : "reports"}`)))),
+      el("p", { class: "hint" }, "Reports are observations, not proof of a breach. Browsing is not blocked."));
+    $("reputation-details").hidden = false;
+  } catch (error) {
+    if (isUnauthorized(error)) await disconnected();
+    show($("reputation-result"), el("p", { class: "status error", role: "alert" },
+      error instanceof ApiError ? error.message : "Could not check community reports."));
+  }
 }
 
 // ---------- start ----------
@@ -561,7 +655,8 @@ async function disconnected() {
 function showConnectionState() {
   const connected = Boolean(state.api && state.auth);
   $("not-connected").hidden = !state.api || connected;
-  for (const id of ["signup-form", "receipt-form"]) setBusy($(id), !connected);
+  $("report-website").disabled = !connected;
+  for (const id of ["signup-form", "receipt-form", "report-form"]) setBusy($(id), !connected);
   if (!state.api) $("backend").textContent = "Backend: not configured";
   else if (!state.auth) $("backend").textContent = `Backend: ${state.api.origin} · not connected to an account`;
   else $("backend").textContent = `Signed in as ${state.auth.email} · ${state.api.origin} (local development)`;
@@ -587,7 +682,7 @@ async function init() {
   }
   showConnectionState();
 
-  // The tab address stays in the popup; it is only sent if you confirm a request containing it.
+  // Only the bare hostname is used for the reputation check; paths and queries stay here.
   state.tab = await readActiveTab();
   state.tabUrl = state.tab?.url ?? null;
   const host = hostnameFromTabUrl(state.tabUrl);
@@ -596,6 +691,7 @@ async function init() {
     $("current-site").textContent = host;
     $("site-name").value = host;
     $("site-domain").value = host;
+    $("report-website").hidden = false;
   } else {
     $("current-site").textContent = "This tab has no website address. Enter the site details below.";
   }
@@ -612,6 +708,9 @@ async function init() {
   $("open-dashboard").addEventListener("click", () => {
     if (state.api) chrome.tabs.create({ url: `${state.api.origin}/dashboard` });
   });
+  $("report-website").addEventListener("click", openReportForm);
+  $("report-cancel").addEventListener("click", () => { $("report-panel").hidden = true; $("report-confirm").replaceChildren(); });
+  $("report-form").addEventListener("submit", reviewWebsiteReport);
 
   try {
     const { selected } = await chrome.storage.session.get("selected");
@@ -623,6 +722,7 @@ async function init() {
 
   $("autofill-lookup").addEventListener("click", lookupAlias);
   $("autofill-allow").addEventListener("click", allowAgain);
+  await loadReputation();
   await startAutofill();
 }
 

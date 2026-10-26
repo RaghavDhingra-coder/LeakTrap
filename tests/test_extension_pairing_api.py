@@ -75,7 +75,7 @@ def test_full_pairing_flow(ext, alice, session, accounts) -> None:
     assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
     issued = r.json()
     assert issued["email"] == "alice@example.com"
-    assert issued["scopes"] == ["receipts:create", "signups:create", "signups:lookup"]
+    assert issued["scopes"] == ["receipts:create", "reports:create", "signups:create", "signups:lookup"]
     stored = session.scalar(select(UserSession).where(UserSession.token_hash == token_hash(issued["token"])))
     assert stored.kind == "extension" and stored.user_id == accounts["alice"].id
     assert timedelta(hours=7, minutes=59) < stored.expires_at - now() <= timedelta(hours=8)
@@ -93,7 +93,7 @@ def test_token_can_do_only_its_scoped_actions(ext, alice, session, accounts) -> 
                                                   "source_url": "https://shop.example.com/p"}, headers=bearer)
     assert receipt.status_code == 201
     assert ext.get("/extension/whoami", headers=bearer).json() == {
-        "email": "alice@example.com", "scopes": ["receipts:create", "signups:create", "signups:lookup"]}
+        "email": "alice@example.com", "scopes": ["receipts:create", "reports:create", "signups:create", "signups:lookup"]}
     # Everything else is refused: reading or deleting data, account actions, dashboard, approving pairings.
     for method, path in [("GET", "/signups"), ("GET", f"/signups/{created.json()['id']}"),
                          ("DELETE", f"/signups/{created.json()['id']}"), ("GET", "/consent-receipts"),

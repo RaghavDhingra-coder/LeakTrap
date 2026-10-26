@@ -32,9 +32,11 @@ from backend.models import (
     MailLog,
     OwnershipClaim,
     Report,
+    SenderDomainReview,
     Signup,
     User,
     UserSession,
+    WebsiteReport,
 )
 from backend.services.domains import normalize_email
 
@@ -65,6 +67,8 @@ LIMITS = {
     "sms_write_user": (120, timedelta(hours=1)),
     "call_analyze_user": (30, timedelta(hours=1)),
     "verify_failed_ip": (20, timedelta(hours=1)),
+    "website_report_user": (10, timedelta(hours=1)),
+    "website_report_ip": (30, timedelta(hours=1)),
 }
 
 
@@ -353,7 +357,8 @@ def delete_account(session: Session, user_id: int, password: str) -> None:
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         raise AuthError("The password is incorrect.") from None
     try:
-        for model in (ComplaintDraft, Report, LeakEdge, Incident, ConsentReceipt, MailLog, Signup, OwnershipClaim):
+        session.execute(delete(WebsiteReport).where(WebsiteReport.reporter_user_id == user_id))
+        for model in (ComplaintDraft, Report, LeakEdge, Incident, ConsentReceipt, MailLog, SenderDomainReview, Signup, OwnershipClaim):
             session.execute(delete(model).where(model.user_id == user_id))
         session.delete(user)  # sessions, pairings and verification tokens cascade
         session.commit()

@@ -22,6 +22,7 @@ from backend.schemas.dashboard import (
     SignupDetailResponse,
     SignupReceipt,
     SignupSms,
+    SenderDomainReviewItem,
     Timeline,
     TimelineItem,
 )
@@ -66,6 +67,7 @@ def signup_detail(db: Session, user_id: int, signup_id: int) -> SignupDetailResp
             id=i.id, created_at=i.created_at, status=i.result,
             confirmed=((i.evidence or {}).get("confirmed") or {}).get("signup_id") == s.id,
         ) for i in detail.sms],
+        sender_domains=[SenderDomainReviewItem(domain=r.domain, review_status=r.review_status) for r in detail.sender_domains],
     )
 
 

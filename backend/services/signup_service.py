@@ -3,11 +3,11 @@
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.models import Signup, User
+from backend.models import SenderDomainReview, Signup, User
 from backend.services.alias_generator import AliasConfig, alias_exists, generate_alias
 from backend.services.ownership import owned_by
 from backend.services.nickname_generator import (
@@ -143,6 +143,8 @@ def delete_signup(session: Session, signup_id: int, user_id: int) -> bool:
     if signup is None:
         return False
     try:
+        session.execute(delete(SenderDomainReview).where(SenderDomainReview.signup_id == signup.id,
+                                                        owned_by(SenderDomainReview.user_id, user_id)))
         session.delete(signup)
         session.commit()
     except IntegrityError:
