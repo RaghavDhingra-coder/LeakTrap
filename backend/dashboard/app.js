@@ -1591,7 +1591,35 @@ function stopPolling() {
 // ---------- leak activity ----------
 
 async function loadActivity() {
-  await Promise.all([loadEmails(), loadInvestigations()]);
+  await Promise.all([loadEmails(), loadInvestigations(), loadCalls()]);
+}
+
+async function loadCalls() {
+  const listBox = document.getElementById("calls-list");
+  if (!listBox) return;
+  say("calls-status", "Loading…");
+  try {
+    const page = await getJSON(`${API}/calls?limit=20`);
+    listBox.replaceChildren(...page.items.map((call) => el("li", { class: "card" },
+      el("details", {},
+        el("summary", {}, `Call analysis · ${formatTime(call.created_at)} · ${call.status}`),
+        el("p", { class: "hint" }, call.notice),
+        el("p", {}, call.redacted_transcript || "Transcript was not saved."),
+        ...exposureCards(call.exposure),
+        el("h4", {}, "Extracted details"),
+        el("ul", {}, ...call.entities.filter((e) => !e.excluded).map((e) =>
+          el("li", {}, `${e.type}: ${e.display}${e.relation ? ` · ${e.relation}` : ""}`))),
+        el("h4", {}, "Supporting evidence"),
+        el("ul", {}, ...call.candidates.flatMap((c) => c.signals.map((s) =>
+          el("li", {}, `${c.name}: ${s.explanation}`)))),
+        el("button", { type: "button", class: "btn btn-secondary btn-sm", onclick: async () => {
+          await api(`${API}/calls/${encodeURIComponent(call.id)}`, { method: "DELETE" });
+          loadCalls();
+        } }, "Delete saved call analysis")))));
+    say("calls-status", page.total ? `Showing ${page.items.length} of ${page.total} saved analyses.` : "No saved call analysis.");
+  } catch (error) {
+    say("calls-status", error.message);
+  }
 }
 
 async function loadEmails() {

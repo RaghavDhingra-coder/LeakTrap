@@ -36,8 +36,10 @@ from backend.schemas.dashboard import (
     Timeline,
 )
 from backend.schemas.signup import MAX_BIGINT
+from backend.schemas.call import CallAnalysisPage
 from backend.security import require_user
 from backend.services import dashboard
+from backend.services import call_analysis
 from backend.services.auth import AuthContext
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "dashboard"
@@ -90,6 +92,20 @@ router = APIRouter(
 )
 
 NOT_FOUND = HTTPException(404, views.SIGNUP_NOT_FOUND)
+
+
+@router.get("/api/calls", response_model=CallAnalysisPage)
+def get_calls(limit: int = Limit, offset: int = Offset,
+              auth: AuthContext = Depends(require_user), db: Session = Depends(get_db)) -> CallAnalysisPage:
+    return call_analysis.list_saved(db, auth.user_id, limit, offset)
+
+
+@router.delete("/api/calls/{call_id}", status_code=204, responses={404: {}})
+def delete_call(call_id: int = PathParam(gt=0, le=MAX_BIGINT),
+                auth: AuthContext = Depends(require_user), db: Session = Depends(get_db)) -> Response:
+    if not call_analysis.delete_saved(db, auth.user_id, call_id):
+        raise HTTPException(404, "Call analysis not found")
+    return Response(status_code=204)
 
 
 @router.get("", include_in_schema=False)

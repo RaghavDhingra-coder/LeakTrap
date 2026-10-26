@@ -259,7 +259,7 @@ finally:
 def test_real_mobile_mode_app_end_to_end(engine) -> None:
     out = probe(END_TO_END, {**MOBILE, "DATABASE_URL": os.environ["TEST_DATABASE_URL"]})
     assert out["pending"] == 202
-    assert out["issued"] == [200, ["account:read", "email:read", "sms:analyze", "sms:write", "timeline:read",
+    assert out["issued"] == [200, ["account:read", "call:analyze", "call:write", "email:read", "sms:analyze", "sms:write", "timeline:read",
                                    "websites:read"], "no-store"]
     assert out["me"] == [200, "alice@example.com", "no-store", "nosniff"]
     assert out["websites"] == ["Example Shop"] and out["own_site"] == 200

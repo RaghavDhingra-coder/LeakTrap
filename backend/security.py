@@ -35,6 +35,7 @@ EXTENSION_SCOPES = frozenset({"signups:create", "signups:lookup", "receipts:crea
 # Every permission a mobile token can ever carry, one per future mobile API area.
 MOBILE_SCOPES = frozenset({
     "account:read", "websites:read", "email:read", "timeline:read", "sms:analyze", "sms:write",
+    "call:analyze", "call:write",
 })
 # What a newly paired device receives: every scope, now that each has its routes.
 # Devices paired earlier keep the scopes they were given until they pair again.

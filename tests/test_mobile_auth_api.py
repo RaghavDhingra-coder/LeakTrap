@@ -115,7 +115,7 @@ def test_full_mobile_pairing_flow(phone, alice, session, accounts) -> None:
     r = exchange(phone, started["pairing_id"], secret)
     assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
     issued = r.json()
-    granted = ["account:read", "email:read", "sms:analyze", "sms:write", "timeline:read", "websites:read"]
+    granted = ["account:read", "call:analyze", "call:write", "email:read", "sms:analyze", "sms:write", "timeline:read", "websites:read"]
     assert issued["email"] == "alice@example.com" and issued["scopes"] == granted
 
     stored = session.scalar(select(UserSession).where(UserSession.token_hash == token_hash(issued["token"])))

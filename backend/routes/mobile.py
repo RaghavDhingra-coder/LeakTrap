@@ -38,15 +38,45 @@ from backend.schemas.dashboard import (
 from backend.schemas.signup import MAX_BIGINT
 from backend.schemas.auth import Credentials
 from backend.schemas.sms import SmsAnalysis, SmsInvestigation, SmsInvestigationPage, SmsSaveResponse
+from backend.schemas.call import CallAnalyzeRequest, CallAnalysis, CallAnalysisPage
 from backend.security import client_ip, require_mobile
 from backend.services import auth as auth_service
 from backend.services import pairing
+from backend.services import call_analysis
 from backend.services.auth import AuthContext, RateLimited
 
 router = APIRouter(prefix="/mobile/v1", tags=["mobile"])
 
 MAX_LABEL = 64
 MAX_BODY = 8 * 1024  # pairing bodies; SMS bodies use sms_shared's own limit
+
+
+@router.post("/calls/analyze", response_model=CallAnalysis, responses={401: {}, 403: {}, 413: {}, 422: {}})
+async def analyze_call(request: Request, auth: AuthContext = Depends(require_mobile("call:analyze")),
+                       db: Session = Depends(get_db)) -> CallAnalysis:
+    payload = await parse_json(request, CallAnalyzeRequest, 12_000)
+    if payload.save and "call:write" not in auth.scopes:
+        raise HTTPException(403, "This device is not allowed to save call analysis.")
+    _count(db, auth, "call_analyze_user")
+    return await run_in_threadpool(call_analysis.analyze, db, auth.user_id, auth.email,
+                                   payload.transcript, settings.alias_domain,
+                                   save=payload.save, store_redacted_transcript=payload.store_redacted_transcript)
+
+
+@router.get("/calls", response_model=CallAnalysisPage)
+def list_calls(limit: int = views.Limit, offset: int = views.Offset,
+               auth: AuthContext = Depends(require_mobile("call:analyze")),
+               db: Session = Depends(get_db)) -> CallAnalysisPage:
+    return call_analysis.list_saved(db, auth.user_id, limit, offset)
+
+
+@router.delete("/calls/{call_id}", status_code=204, responses={401: {}, 403: {}, 404: {}})
+def delete_call(call_id: int = Path(gt=0, le=MAX_BIGINT),
+                auth: AuthContext = Depends(require_mobile("call:write")),
+                db: Session = Depends(get_db)) -> Response:
+    if not call_analysis.delete_saved(db, auth.user_id, call_id):
+        raise HTTPException(404, "Call analysis not found")
+    return Response(status_code=204)
 
 
 async def parse(request: Request, model):

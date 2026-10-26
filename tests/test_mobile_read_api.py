@@ -182,7 +182,7 @@ def test_lists_never_include_other_users_or_unowned_records(phone, alice_token, 
             assert value not in text, value
 
 
-def test_full_senders_subjects_and_hashes_never_returned(phone, alice_token, data) -> None:  # noqa: F811
+def test_historical_senders_subjects_and_hashes_never_returned(phone, alice_token, data) -> None:  # noqa: F811
     texts = [phone.get(p, headers=bearer(alice_token)).text for p in ROUTES]
     texts.append(phone.get(f"/mobile/v1/websites/{data['shop']}", headers=bearer(alice_token)).text)
     texts += [phone.get(f"/mobile/v1/emails/{i['id']}", headers=bearer(alice_token)).text
@@ -190,8 +190,13 @@ def test_full_senders_subjects_and_hashes_never_returned(phone, alice_token, dat
     combined = "\n".join(texts)
     for value in NEVER_SHOWN:
         assert value not in combined, value
-    for key in ('"sender"', '"subject"', '"message_id_hash"', '"user_id"'):
+    for key in ('"sender"', '"message_id_hash"', '"user_id"'):
         assert key not in combined, key
+    # Tracked messages may include the owner's stored inbox metadata; historical
+    # rows must not expose legacy sender or subject values through those fields.
+    for row in mobile_get(phone, alice_token, "/mobile/v1/emails")["items"]:
+        if not row["tracked"]:
+            assert row["subject"] is row["sender_email"] is row["sender_name"] is None
 
 
 # ---------- authentication and scopes ----------

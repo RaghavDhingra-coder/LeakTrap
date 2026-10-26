@@ -229,8 +229,11 @@ def test_full_senders_subjects_and_hashes_never_returned(client, data) -> None:
     combined = "\n".join(texts)
     for value in NEVER_SHOWN:
         assert value not in combined, value
-    for key in ('"sender"', '"subject"', '"message_id_hash"'):
+    for key in ('"sender"', '"message_id_hash"'):
         assert key not in combined, key
+    for row in get(client, "/dashboard/api/emails")["items"]:
+        if not row["tracked"]:
+            assert row["subject"] is row["sender_email"] is row["sender_name"] is None
 
 
 @pytest.mark.parametrize("path", ["/dashboard/api/signups", "/dashboard/api/emails", "/dashboard/api/investigations"])

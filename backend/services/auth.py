@@ -63,6 +63,7 @@ LIMITS = {
     "mobile_pairing_exchange_ip": (120, timedelta(hours=1)),
     "sms_analyze_user": (60, timedelta(hours=1)),
     "sms_write_user": (120, timedelta(hours=1)),
+    "call_analyze_user": (30, timedelta(hours=1)),
     "verify_failed_ip": (20, timedelta(hours=1)),
 }
 
