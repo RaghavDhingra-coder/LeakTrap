@@ -178,6 +178,11 @@ class EmailRow:
     alias: str | None
     unread: bool
     exposure: list[dict]
+    tracked: bool
+    subject: str | None
+    sender_name: str | None
+    sender_email: str | None
+    auth_results: str | None
 
 
 def _email_query(user_id: int):
@@ -191,6 +196,7 @@ def _email_query(user_id: int):
 def _email_row(log: MailLog, signup: Signup | None, owned_signups: list[Signup]) -> EmailRow:
     site_name = signup.site_name if signup else None
     site_domain = signup.site_domain if signup else None
+    tracked = log.ingest_status is not None
     return EmailRow(
         id=log.id, received_at=log.received_at, created_at=log.created_at,
         match_status=log.match_status, match_confidence=log.match_confidence,
@@ -200,6 +206,10 @@ def _email_row(log: MailLog, signup: Signup | None, owned_signups: list[Signup])
         status_reason=_status_reason(log, site_name is not None), alias=log.alias,
         unread=log.ingest_status is not None and log.read_at is None,
         exposure=email_attribution.email_exposure(log, signup, owned_signups),
+        tracked=tracked, subject=log.subject if tracked else None,
+        sender_name=log.sender_name if tracked else None,
+        sender_email=log.sender if tracked else None,
+        auth_results=log.auth_results if tracked else None,
     )
 
 

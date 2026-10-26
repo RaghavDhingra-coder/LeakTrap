@@ -1,7 +1,7 @@
 """A site's recorded markers can suggest exposure without claiming a confirmed leak."""
 import pytest
 
-from backend.models import MailLog
+from backend.models import MailLog, Signup
 from tests.auth_support import mobile_token
 from tests.test_inbox_api import accounts, signups, alice, bob, worker, deliver  # noqa: F401
 from tests.test_sms_api import sites, analyze  # noqa: F401
@@ -29,6 +29,58 @@ def test_external_sender_to_facebook_alias_has_same_dashboard_mobile_signal(alic
     assert "does not prove" in signal["caveat"]
     assert signal["signup_id"] == signups["shop"].id
     assert worker.get(f"/mobile/v1/emails/{mail_id}", headers={"Authorization": "Bearer invalid"}).status_code == 401
+
+
+def test_new_email_mobile_list_matches_dashboard_inbox_evidence(alice, worker, signups, accounts, session):
+    signups["shop"].site_name = "Facebook"
+    signups["shop"].site_domain = "facebook.com"
+    session.commit()
+    mail_id = deliver(worker, signups["shop"].alias, 36,
+                      from_header="Mayur <mayur@gmail.com>", subject="Hi Alice")["mail_log_id"]
+    token = mobile_token(session, accounts["alice"], scopes=("email:read",))
+    headers = {"Authorization": f"Bearer {token}"}
+    mobile = worker.get("/mobile/v1/emails", headers=headers).json()
+    inbox = alice.get("/dashboard/api/inbox").json()
+    row = next(item for item in mobile["items"] if item["id"] == mail_id)
+    web = next(item for item in inbox["items"] if item["id"] == mail_id)
+    for field in ("status", "alias", "site_name", "subject", "sender_email", "auth_results", "exposure"):
+        assert row[field] == web[field]
+    assert row["exposure"][0]["site_name"] == "Facebook"
+    assert row["sender_email"] == "mayur@gmail.com"
+
+
+def test_mobile_email_pages_are_newest_first_and_scoped(alice, bob, worker, signups, accounts, session):
+    older = deliver(worker, signups["shop"].alias, 37)["mail_log_id"]
+    newer = deliver(worker, signups["shop"].alias, 38)["mail_log_id"]
+    alice_token = mobile_token(session, accounts["alice"], scopes=("email:read",))
+    bob_token = mobile_token(session, accounts["bob"], scopes=("email:read",))
+    auth = {"Authorization": f"Bearer {alice_token}"}
+    first = worker.get("/mobile/v1/emails", params={"limit": 1, "offset": 0}, headers=auth).json()
+    second = worker.get("/mobile/v1/emails", params={"limit": 1, "offset": 1}, headers=auth).json()
+    assert first["total"] == second["total"] == 2
+    assert [first["items"][0]["id"], second["items"][0]["id"]] == [newer, older]
+    assert worker.get("/mobile/v1/emails", headers={"Authorization": f"Bearer {bob_token}"}).json()["items"] == []
+    assert worker.get(f"/mobile/v1/emails/{newer}", headers={"Authorization": f"Bearer {bob_token}"}).status_code == 404
+
+
+def test_mobile_website_pages_follow_dashboard_edits_and_deletes(alice, worker, signups, accounts, session):
+    token = mobile_token(session, accounts["alice"], scopes=("websites:read",))
+    auth = {"Authorization": f"Bearer {token}"}
+    signups["shop"].alias = "changed123@leaktrap.xyz"
+    added = Signup(user_id=accounts["alice"].id, site_name="New Site", site_domain="new.example",
+                   alias="newsite1@leaktrap.xyz", nickname="Ember")
+    session.add(added)
+    session.commit()
+    pages = [worker.get("/mobile/v1/websites", params={"limit": 1, "offset": i}, headers=auth).json()
+             for i in range(3)]
+    mobile = [page["items"][0] for page in pages]
+    web = alice.get("/dashboard/api/signups", params={"limit": 100}).json()["items"]
+    assert [(row["id"], row["alias"], row["nickname"]) for row in mobile] == [
+        (row["id"], row["alias"], row["nickname"]) for row in web]
+    assert next(row for row in mobile if row["id"] == signups["shop"].id)["alias"] == "changed123@leaktrap.xyz"
+    session.delete(added)
+    session.commit()
+    assert added.id not in [row["id"] for row in worker.get("/mobile/v1/websites", headers=auth).json()["items"]]
 
 
 def test_own_sender_and_legacy_or_failed_records_have_no_exposure(alice, worker, signups, session):

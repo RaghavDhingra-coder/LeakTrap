@@ -64,6 +64,11 @@ class DashboardEmail(BaseModel):
     alias: str | None
     unread: bool
     exposure: list[ExposureSignal]
+    tracked: bool = Field(description="False for historical records without stored inbox details.")
+    subject: str | None = Field(description="Untrusted subject; absent for historical records.")
+    sender_name: str | None = Field(description="Untrusted From display name.")
+    sender_email: str | None = Field(description="Untrusted From address, or envelope sender.")
+    auth_results: str | None = Field(description="Reported by the inbound provider; not independent sender verification.")
 
     id: int
     received_at: datetime
