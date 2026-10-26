@@ -753,8 +753,10 @@ async function showWebsite(id) {
       d.receipts.length ? list(d.receipts.map((r) => `${formatTime(r.recorded_at)} — ${ACTION_LABELS[r.action] ?? "Not recorded"}`
         + `${r.evidence_basis === "user_reported" ? " · user-reported (not verified)" : ""}`)) : el("p", { class: "hint" }, "None yet."),
       el("h4", {}, "Email received at this alias"),
-      d.emails.length ? list(d.emails.map((m) => el("span", {}, formatTime(m.received_at), " ", statusBadge(m.status),
-        m.sender_domain ? ` from ${m.sender_domain} (claimed)` : ""))) : el("p", { class: "hint" }, "None yet."),
+      d.emails.length ? list(d.emails.map((m) => el("div", {},
+        el("span", {}, formatTime(m.received_at), " ", statusBadge(m.status),
+          m.sender_domain ? ` from ${m.sender_domain} (claimed)` : ""),
+        ...exposureCards(m.exposure)))) : el("p", { class: "hint" }, "None yet."),
       el("h4", {}, "SMS investigations"),
       d.sms_investigations?.length ? el("ul", {}, ...d.sms_investigations.map((m) => el("li", {},
         `${formatTime(m.created_at)} — `, m.confirmed ? sourceBadge("confirmed") : sourceBadge(m.status ?? "unknown"),
@@ -968,6 +970,21 @@ function setUnreadBadge(count) {
   badge.setAttribute("aria-label", unreadLabel(count));
 }
 
+function exposureCards(signals) {
+  return (signals ?? []).map((item) => el("details", { class: "exposure-card" },
+    el("summary", {}, icon("alert"),
+      el("span", {}, `Possible source: ${item.site_name}`),
+      el("span", { class: "exposure-confidence" }, item.confidence === "medium" ? "Alias evidence" : "Name clue")),
+    el("div", { class: "exposure-body" },
+      el("p", {}, item.explanation),
+      el("dl", { class: "exposure-facts" },
+        el("dt", {}, "Your recorded detail"), el("dd", {}, item.marker),
+        el("dt", {}, "Recorded website"), el("dd", {}, item.site_name),
+        el("dt", {}, "Expected domain"), el("dd", {}, item.expected_domain ?? "Not recorded"),
+        el("dt", {}, "Observed source"), el("dd", {}, item.observed_source ?? "Unverified")),
+      el("p", { class: "hint" }, item.caveat))));
+}
+
 function inboxStatusBadge(m) {
   return el("span", { class: `badge badge-inbox-${m.status}` }, INBOX_STATUS_LABELS[m.status] ?? m.status);
 }
@@ -989,6 +1006,7 @@ function inboxCard(m, { compact = false } = {}) {
       el("p", { class: "card-line" }, m.tracked && m.status !== "unmatched" ? notificationText(m) : reasonText(m.status_reason) ?? ""),
       el("p", { class: "card-line hint" }, m.tracked ? `From ${senderText(m)}` : "Sender and subject were not stored for this record."),
       el("p", { class: "card-meta hint" }, ...meta.filter(Boolean)),
+      ...exposureCards(m.exposure),
       compact ? null : el("div", { class: "card-foot" }, el("button", { type: "button", class: "btn btn-secondary btn-sm",
         "aria-label": `Open message: ${title}`, onclick: () => showInboxDetail(m.id) }, "Open"))));
 }
@@ -1072,6 +1090,7 @@ async function showInboxDetail(id) {
       refreshUnread();
     }
     body.replaceChildren(
+      ...exposureCards(d.exposure),
       el("dl", {}, ...inboxDetailRows(d).flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
       el("p", { class: "notice", role: "note" }, "A message linked to a website is not proof that the website leaked, sold or shared your data."));
     unreadButton.hidden = !d.tracked;
@@ -1323,6 +1342,9 @@ function renderSmsAnalysis(a) {
     el("button", { type: "submit", class: "btn btn-secondary btn-sm" }, icon("plus"), "Add and re-analyse"));
   fill(result,
     overview,
+    a.risk?.exposure?.length ? el("section", { "aria-label": "Possible sources of your details" },
+      el("h3", { class: "section-title" }, "Where your detail may have come from"),
+      ...exposureCards(a.risk.exposure)) : null,
     el("h3", { class: "section-title" }, "Scam assessment"),
     a.risk ? el("div", { class: "notice" },
       el("strong", {}, `${a.risk.assessment} · ${a.risk.risk_level}`),
@@ -1585,7 +1607,8 @@ async function loadEmails() {
       el("td", { class: "time" }, formatTime(m.received_at)),
       el("td", {}, statusBadge(m.status)),
       el("td", {}, m.alias ?? "—"),
-      el("td", {}, m.site_name ? siteLabel(m.site_name, m.site_domain) : el("span", { class: "dim" }, m.recipient_known ? "Known alias" : "Unknown alias")),
+      el("td", {}, m.site_name ? siteLabel(m.site_name, m.site_domain) : el("span", { class: "dim" }, m.recipient_known ? "Known alias" : "Unknown alias"),
+        m.exposure?.length ? el("span", { class: "exposure-inline" }, ` · Possible source: ${m.exposure.map((x) => x.site_name).join(", ")}`) : null),
       el("td", {}, m.sender_domain ? el("span", { class: "marker" }, m.sender_domain) : "—"),
       el("td", { class: "actions" }, el("button", { type: "button", class: "btn btn-secondary btn-sm",
         "aria-label": `Show match details for email ${m.id}`, onclick: () => showEmailDetail(m.id) }, "Details")))));
@@ -1617,6 +1640,7 @@ async function showEmailDetail(id) {
     ];
     body.replaceChildren(
       el("p", { class: "notice", role: "note" }, d.notice),
+      ...exposureCards(d.exposure),
       el("dl", {}, ...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
       el("p", { class: "hint" }, d.stored_details),
       el("h4", {}, "Limitations"), list(d.limitations));

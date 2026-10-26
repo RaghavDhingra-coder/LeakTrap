@@ -536,3 +536,19 @@ summary { cursor: pointer; color: var(--muted); font-size: 0.875rem; }
 @media (forced-colors: active) {
   .badge, .count, .btn-primary, .nav [role="tab"][aria-selected="true"] { border: 1px solid CanvasText; }
 }
+
+/* Expandable evidence stays distinct from recipient matching and scam risk. */
+.exposure-card { margin: 10px 0; border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--border)); border-radius: var(--radius-sm); background: var(--warn-soft); }
+.exposure-card summary { display: flex; gap: 10px; align-items: center; cursor: pointer; padding: 12px 14px; color: var(--warn); font-weight: 650; list-style: none; }
+.exposure-card summary::-webkit-details-marker { display: none; }
+.exposure-card summary::after { content: "⌄"; margin-left: auto; transition: transform .22s ease; }
+.exposure-card[open] summary::after { transform: rotate(180deg); }
+.exposure-card summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.exposure-confidence { color: var(--text-2); font-size: .77rem; font-weight: 500; }
+.exposure-body { padding: 0 14px 14px; animation: exposure-reveal .25s ease-out both; }
+.exposure-facts { display: grid; grid-template-columns: minmax(100px, max-content) minmax(0, 1fr); gap: 4px 12px; margin: 8px 0; font-size: .88rem; }
+.exposure-facts dt { color: var(--muted); }
+.exposure-facts dd { margin: 0; overflow-wrap: anywhere; }
+.exposure-inline { color: var(--warn); font-size: .78rem; }
+@keyframes exposure-reveal { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .exposure-body { animation: none; } .exposure-card summary::after { transition: none; } }

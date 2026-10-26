@@ -336,7 +336,7 @@ def investigate(
     sender_notes = _sender_notes(sender)
     logger.info("SMS analysis: entities=%d candidates=%d status=%s", len(active), len(ranked), status)
     from backend.services.sms_risk import assess
-    risk = assess(extraction, entities, excluded, ranked, signups)
+    risk = assess(extraction, entities, excluded, ranked, signups, sender)
     return Analysis(extraction, entities, excluded, sender, sender_notes, received_at, label, status, ranked,
                     identifiers, missing, warnings, dedup_key(user_id, extraction.text, sender, received_at), risk)
 

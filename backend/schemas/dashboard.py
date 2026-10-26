@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
+from backend.schemas.exposure import ExposureSignal
+
 NOT_PROOF = (
     "A match links a message to one of your signups. It is not proof that a site "
     "leaked, sold or shared your data. Recipient attribution does not authenticate the sender or establish safety."
@@ -61,6 +63,7 @@ class DashboardEmail(BaseModel):
     status_reason: str | None
     alias: str | None
     unread: bool
+    exposure: list[ExposureSignal]
 
     id: int
     received_at: datetime
@@ -179,6 +182,7 @@ class InboxItem(BaseModel):
     auth_results: str | None = Field(description='e.g. "spf=pass dkim=pass dmarc=pass", as reported by Cloudflare.')
     match_status: str | None
     match_confidence: str | None
+    exposure: list[ExposureSignal]
 
 
 class InboxPage(BaseModel):

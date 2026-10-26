@@ -10,6 +10,8 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
+from backend.schemas.exposure import ExposureSignal
+
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from backend.services.sms_extract import MAX_SMS_LENGTH
@@ -148,6 +150,7 @@ class SmsRisk(BaseModel):
     assessment: Literal["Likely scam", "Suspicious", "Inconclusive"]
     risk_level: Literal["high", "moderate", "unknown"]
     reasons: list[SmsRiskReason]
+    exposure: list[ExposureSignal] = []
     urls: list[str]
     domains: list[str]
     next_steps: list[str]
