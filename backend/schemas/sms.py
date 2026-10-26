@@ -138,7 +138,24 @@ class SmsCandidate(BaseModel):
     sms_count: int | None
 
 
+class SmsRiskReason(BaseModel):
+    code: str
+    message: str
+    evidence: str | None = None
+
+
+class SmsRisk(BaseModel):
+    assessment: Literal["Likely scam", "Suspicious", "Inconclusive"]
+    risk_level: Literal["high", "moderate", "unknown"]
+    reasons: list[SmsRiskReason]
+    urls: list[str]
+    domains: list[str]
+    next_steps: list[str]
+    notice: str
+
+
 class SmsAnalysis(BaseModel):
+    risk: SmsRisk | None = None
     status: SourceStatus
     sender: SmsSender | None
     sender_notes: list[str]
@@ -170,6 +187,7 @@ class SmsSavedCandidate(BaseModel):
 
 
 class SmsInvestigation(BaseModel):
+    risk: SmsRisk | None = None
     id: int
     created_at: datetime
     status: SourceStatus

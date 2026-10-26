@@ -83,7 +83,7 @@ def _run(db: Session, auth: AuthContext, payload: SmsAnalyzeRequest, alias_domai
 def _analysis_out(a: Analysis) -> SmsAnalysis:
     relations = {f.entity_key: f for f in a.identifiers}
     return SmsAnalysis(
-        status=a.status,
+        status=a.status, risk=a.risk,
         sender=SmsSender(type=a.sender["type"], display=a.sender["display"]) if a.sender else None,
         sender_notes=a.sender_notes, received_at=a.received_at, label=a.label,
         redacted_text=sms_extract.redact(a.extraction),
@@ -114,7 +114,7 @@ def _saved_out(incident: Incident) -> SmsInvestigation:
     ev = incident.evidence or {}
     confirmed = ev.get("confirmed")
     return SmsInvestigation(
-        id=incident.id, created_at=incident.created_at,
+        id=incident.id, created_at=incident.created_at, risk=ev.get("risk"),
         status=incident.result if incident.result in ("confirmed", "strong", "possible", "unknown") else "unknown",
         matched_site=incident.matched_site, sender=_sender_out(ev.get("sender")),
         received_at=ev.get("received_at"), label=ev.get("label"), entity_counts=ev.get("entity_counts") or {},

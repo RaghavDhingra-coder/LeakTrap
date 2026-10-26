@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 NOT_PROOF = (
     "A match links a message to one of your signups. It is not proof that a site "
-    "leaked, sold or shared your data."
+    "leaked, sold or shared your data. Recipient attribution does not authenticate the sender or establish safety."
 )
 
 
@@ -23,8 +23,10 @@ class OverviewResponse(BaseModel):
     receipts: int
     emails_total: int
     matched: int
-    ambiguous: int
-    no_match: int
+    unmatched: int
+    failed: int
+    ambiguous: int = Field(description="Legacy source-analysis count, not recipient attribution.")
+    no_match: int = Field(description="Legacy source-analysis count, not recipient attribution.")
     unprocessed: int = Field(description="Mail records without a stored match status.")
     investigations: int = Field(description="Matcher results you chose to record.")
     unread: int = Field(description="Unread inbox messages.")
@@ -54,6 +56,11 @@ class DashboardSignupPage(BaseModel):
 
 class DashboardEmail(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+    status: Literal["matched", "unmatched", "failed", "unprocessed"]
+    status_reason: str | None
+    alias: str | None
+    unread: bool
 
     id: int
     received_at: datetime
@@ -140,6 +147,7 @@ class InvestigationPage(BaseModel):
 
 
 UNTRUSTED = (
+    "Matched identifies a recipient alias and its registered website, not a verified or safe sender. "
     "Sender names, addresses and subjects come from the message itself and can be forged. "
     "Authentication results are as reported by Cloudflare's header; LeakTrace does not verify them."
 )
@@ -150,7 +158,7 @@ class InboxItem(BaseModel):
 
     id: int
     received_at: datetime
-    status: Literal["matched", "unmatched", "failed"] = Field(
+    status: Literal["matched", "unmatched", "failed", "unprocessed"] = Field(
         description='"matched": linked to one of your websites by its exact alias; "unmatched": not linked '
                     '(status_reason says why); "failed": linked, but the leak analysis failed.'
     )

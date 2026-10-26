@@ -257,7 +257,7 @@ def _link_entity(b: _Builder, raw: str, start: int, host: str, scheme: str, path
     b.add("url", start, start + len(raw), display=display, certainty="validated", value=value,
           sensitive=bool(sensitive_reason), note=" ".join(notes) or None,
           meta={"host": shown_host, "domain": registrable_domain(domain) if domain else None,
-                "shortener": shortener, "ip": bool(ip)})
+                "shortener": shortener, "ip": bool(ip), "scheme": scheme, "userinfo": userinfo})
 
 
 def _links(b: _Builder) -> None:

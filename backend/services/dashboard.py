@@ -15,9 +15,10 @@ from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from backend.models import ConsentReceipt, Incident, MailLog, Signup
+from backend.services import email_attribution
+from backend.services.email_attribution import alias_link as _alias_link
 from backend.services.ownership import owned_by
 
-MATCH_STATUSES = ("matched", "ambiguous", "no_match")
 SIGNUP_FILTERS = ("all", "with_receipts", "with_emails", "real_name")
 
 
@@ -31,6 +32,8 @@ class Overview:
     receipts: int
     emails_total: int
     matched: int
+    unmatched: int
+    failed: int
     ambiguous: int
     no_match: int
     unprocessed: int
@@ -46,14 +49,18 @@ def overview(session: Session, user_id: int) -> Overview:
     receipts = session.scalar(select(func.count()).select_from(ConsentReceipt).where(owned_by(ConsentReceipt.user_id, user_id)))
     investigations = session.scalar(select(func.count()).select_from(Incident).where(owned_by(Incident.user_id, user_id)))
     rows = session.execute(
-        select(MailLog.match_status, func.count()).where(owned_by(MailLog.user_id, user_id)).group_by(MailLog.match_status)
+        select(_status, func.count()).select_from(MailLog).outerjoin(Signup, _alias_link(user_id))
+        .where(owned_by(MailLog.user_id, user_id)).group_by(_status)
     ).all()
-    counts = {status: count for status, count in rows}
-    known = {status: counts.get(status, 0) for status in MATCH_STATUSES}
-    unprocessed = sum(c for status, c in counts.items() if status not in MATCH_STATUSES)
+    counts = dict(rows)
+    known = {status: counts.get(status, 0) for status in ("matched", "unmatched", "failed")}
+    unprocessed = counts.get("unprocessed", 0)
+    # Retained for older clients; these are source-analysis counts, not attribution.
+    legacy = dict(session.execute(select(MailLog.match_status, func.count())
+        .where(owned_by(MailLog.user_id, user_id)).group_by(MailLog.match_status)).all())
     return Overview(
         websites=s[0], aliases=s[1], nicknames=s[2], receipts=receipts or 0, emails_total=sum(counts.values()),
-        **known, unprocessed=unprocessed, investigations=investigations or 0,
+        **known, ambiguous=legacy.get("ambiguous", 0), no_match=legacy.get("no_match", 0), unprocessed=unprocessed, investigations=investigations or 0,
         unread=unread_count(session, user_id),
     )
 
@@ -84,7 +91,7 @@ def _counts_subqueries(user_id: int):
         .group_by(ConsentReceipt.signup_id).subquery()
     )
     emails = (
-        select(MailLog.signup_id, func.count().label("n"))
+        select(MailLog.signup_id, func.count().label("n")).join(Signup, _alias_link(user_id))
         .where(owned_by(MailLog.user_id, user_id), MailLog.signup_id.is_not(None))
         .group_by(MailLog.signup_id).subquery()
     )
@@ -143,7 +150,7 @@ def get_signup_detail(session: Session, user_id: int, signup_id: int, recent: in
         .order_by(ConsentReceipt.created_at.desc(), ConsentReceipt.id.desc()).limit(recent)
     ).all()
     emails = session.execute(
-        _email_query(user_id).where(MailLog.signup_id == signup.id)
+        _email_query(user_id).where(Signup.id == signup.id)
         .order_by(MailLog.received_at.desc(), MailLog.id.desc()).limit(recent)
     ).all()
     from backend.services.sms_investigations import linked_to_signup
@@ -165,12 +172,16 @@ class EmailRow:
     site_name: str | None
     site_domain: str | None
     sender_domain: str | None
+    status: str
+    status_reason: str | None
+    alias: str | None
+    unread: bool
 
 
 def _email_query(user_id: int):
     return (
         select(MailLog, Signup.site_name, Signup.site_domain)
-        .outerjoin(Signup, MailLog.signup_id == Signup.id)
+        .outerjoin(Signup, _alias_link(user_id))
         .where(owned_by(MailLog.user_id, user_id))
     )
 
@@ -179,8 +190,11 @@ def _email_row(log: MailLog, site_name: str | None, site_domain: str | None) -> 
     return EmailRow(
         id=log.id, received_at=log.received_at, created_at=log.created_at,
         match_status=log.match_status, match_confidence=log.match_confidence,
-        recipient_known=log.signup_id is not None, signup_id=log.signup_id,
+        recipient_known=site_name is not None, signup_id=log.signup_id if site_name is not None else None,
         site_name=site_name, site_domain=site_domain, sender_domain=log.sender_domain,
+        status=_effective_status(log, site_name is not None),
+        status_reason=_status_reason(log, site_name is not None), alias=log.alias,
+        unread=log.ingest_status is not None and log.read_at is None,
     )
 
 
@@ -188,9 +202,9 @@ def list_emails(
     session: Session, user_id: int, limit: int, offset: int, status: str | None = None
 ) -> tuple[list[EmailRow], int]:
     query = _email_query(user_id)
-    if status == "unprocessed":
-        query = query.where(MailLog.match_status.is_(None))
-    elif status is not None:
+    if status in ("matched", "unmatched", "failed", "unprocessed"):
+        query = query.where(_status == status)
+    elif status is not None:  # compatibility for old clients' analysis-only filters
         query = query.where(MailLog.match_status == status)
     total = session.scalar(select(func.count()).select_from(query.subquery()))
     rows: Sequence = session.execute(
@@ -246,14 +260,24 @@ def list_investigations(session: Session, user_id: int, limit: int, offset: int)
 
 # ---------- inbox (email received at the user's aliases) ----------
 
-INBOX_FILTERS = ("all", "unread", "matched", "unmatched", "failed")
+INBOX_FILTERS = ("all", "unread", "matched", "unmatched", "failed", "unprocessed")
 
 # Linked to one of the user's signups. The join also requires the signup to be
 # the user's own, so a mismatched link never reveals another account's signup.
 _linked = Signup.id.is_not(None)
 _tracked = MailLog.ingest_status.is_not(None)
 _unread = and_(MailLog.read_at.is_(None), _tracked)
-_status = case((~_linked, "unmatched"), (MailLog.ingest_status == "failed", "failed"), else_="matched")
+_status = case((MailLog.ingest_status == "failed", "failed"),
+               (MailLog.ingest_status.is_(None), "unprocessed"),
+               (and_(MailLog.ingest_status == "matched", _linked), "matched"), else_="unmatched")
+
+
+def _effective_status(log: MailLog, linked: bool) -> str:
+    return email_attribution.effective_status(log.ingest_status, linked)
+
+
+def _status_reason(log: MailLog, linked: bool) -> str | None:
+    return email_attribution.status_reason(log.ingest_status, linked, log.status_reason)
 
 
 @dataclass(frozen=True)
@@ -293,19 +317,15 @@ def identity_label(nickname: str | None, surname: str | None, real_name_used: bo
 def _inbox_query(user_id: int):
     return (
         select(MailLog, Signup)
-        .outerjoin(Signup, and_(MailLog.signup_id == Signup.id, owned_by(Signup.user_id, user_id)))
+        .outerjoin(Signup, _alias_link(user_id))
         .where(owned_by(MailLog.user_id, user_id))
     )
 
 
 def _inbox_row(log: MailLog, signup: Signup | None) -> InboxRow:
     tracked = log.ingest_status is not None
-    if signup is None:
-        status, reason = "unmatched", log.status_reason or "not_linked"
-    elif log.ingest_status == "failed":
-        status, reason = "failed", log.status_reason or "analysis_failed"
-    else:
-        status, reason = "matched", None
+    status = _effective_status(log, signup is not None)
+    reason = _status_reason(log, signup is not None)
     identity, kind = identity_label(signup.nickname, signup.surname_variant, signup.real_name_used) if signup else (None, "none")
     # Message details exist only for rows recorded by inbox tracking; older
     # rows may hold sender or subject values that were never meant to be shown.
@@ -332,7 +352,7 @@ def list_inbox(
     query = _inbox_query(user_id)
     if filter_ == "unread":
         query = query.where(_unread)
-    elif filter_ in ("matched", "unmatched", "failed"):
+    elif filter_ in ("matched", "unmatched", "failed", "unprocessed"):
         query = query.where(_status == filter_)
     total = session.scalar(select(func.count()).select_from(query.subquery()))
     rows = session.execute(query.order_by(MailLog.received_at.desc(), MailLog.id.desc()).limit(limit).offset(offset)).all()
@@ -412,7 +432,7 @@ def timeline(session: Session, user_id: int, limit: int = 30) -> list[TimelineIt
     """
     items: list[TimelineItem] = []
     mail = session.execute(
-        select(MailLog, Signup).outerjoin(Signup, and_(MailLog.signup_id == Signup.id, owned_by(Signup.user_id, user_id)))
+        select(MailLog, Signup).outerjoin(Signup, _alias_link(user_id))
         .where(owned_by(MailLog.user_id, user_id)).order_by(MailLog.received_at.desc(), MailLog.id.desc()).limit(limit)
     ).all()
     for log, signup in mail:

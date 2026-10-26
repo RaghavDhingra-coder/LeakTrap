@@ -33,7 +33,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.models import MailLog, Signup
-from backend.services import matcher
+from backend.services import email_attribution, matcher
 from backend.services.domains import normalize_email
 
 logger = logging.getLogger("leaktrace.ingest")
@@ -156,10 +156,16 @@ def dedup_hash(mail: InboundMail) -> str:
     return hashlib.sha256(basis.encode()).hexdigest()
 
 
-def _outcome(log: MailLog, duplicate: bool, reprocessed: bool = False) -> IngestOutcome:
+def _outcome(session: Session, log: MailLog, duplicate: bool, reprocessed: bool = False) -> IngestOutcome:
+    signup = session.get(Signup, log.signup_id) if log.signup_id else None
+    linked = bool(signup and log.user_id and signup.user_id == log.user_id
+                  and email_attribution.valid_stored_alias(log.alias) and signup.alias
+                  and signup.alias.lower() == log.alias.lower() and signup.site_name.strip())
+    status = email_attribution.effective_status(log.ingest_status, linked)
+    reason = email_attribution.status_reason(log.ingest_status, linked, log.status_reason)
     return IngestOutcome(
         log.id, duplicate, log.signup_id is not None, log.match_status, log.match_confidence,
-        log.ingest_status or "matched", log.status_reason, reprocessed,
+        status, reason, reprocessed,
     )
 
 
@@ -175,6 +181,8 @@ def resolve_recipient(session: Session, recipient: str) -> tuple[Signup | None, 
         return None, "unknown_alias"
     if len(found) > 1:  # prevented by uq_signups_alias_lower; never pick one
         return None, "ambiguous_alias"
+    if not found[0].site_name or not found[0].site_name.strip():
+        return None, "unknown_alias"
     if found[0].user_id is None:
         return found[0], "unowned_alias"
     return found[0], None
@@ -202,11 +210,12 @@ def _analyse(session: Session, mail: InboundMail, signup: Signup) -> tuple[str, 
 def _reprocess(session: Session, mail: InboundMail, log: MailLog) -> IngestOutcome:
     """Redelivery of a message whose analysis failed: run the matcher again."""
     signup = session.get(Signup, log.signup_id) if log.signup_id else None
-    if signup is None or signup.user_id != log.user_id:
-        return _outcome(log, True)
+    if (signup is None or not log.user_id or signup.user_id != log.user_id or not signup.site_name.strip() or not signup.alias
+            or signup.alias.lower() != mail.recipient or log.alias != mail.recipient):
+        return _outcome(session, log, True)
     analysed = _analyse(session, mail, signup)
     if analysed is None:
-        return _outcome(log, True)
+        return _outcome(session, log, True)
     log.match_status, log.match_confidence = analysed
     log.ingest_status, log.status_reason = "matched", None
     try:
@@ -214,7 +223,7 @@ def _reprocess(session: Session, mail: InboundMail, log: MailLog) -> IngestOutco
     except Exception:
         session.rollback()
         raise
-    return _outcome(log, True, reprocessed=True)
+    return _outcome(session, log, True, reprocessed=True)
 
 
 def process(session: Session, mail: InboundMail) -> IngestOutcome:
@@ -226,17 +235,20 @@ def process(session: Session, mail: InboundMail) -> IngestOutcome:
     in that signup owner's scope only. If the alias is unknown, no search is
     made at all, rather than searching more broadly.
     """
+    # Reject malformed envelope addresses even when invoked outside the HTTP route.
+    from dataclasses import replace
+    mail = replace(mail, recipient=normalize_email(mail.recipient))
     key = dedup_hash(mail)
     if existing := _existing(session, key):
         if existing.ingest_status == "failed":
             return _reprocess(session, mail, existing)
-        return _outcome(existing, True)
+        return _outcome(session, existing, True)
 
     signup, reason = resolve_recipient(session, mail.recipient)
     sender = mail.sender_for_matching
     status, confidence = "no_match", "none"
     ingest_status = "matched" if reason is None else "unmatched"
-    if signup is not None:
+    if signup is not None and reason is None:
         analysed = _analyse(session, mail, signup)
         if analysed is None:
             status, confidence = None, None
@@ -275,11 +287,11 @@ def process(session: Session, mail: InboundMail) -> IngestOutcome:
         existing = _existing(session, key)
         if existing is None:
             raise
-        return _outcome(existing, True)
+        return _outcome(session, existing, True)
     except Exception:
         session.rollback()
         raise
-    return _outcome(log, False)
+    return _outcome(session, log, False)
 
 
 def now() -> datetime:

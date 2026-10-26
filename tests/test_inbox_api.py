@@ -193,7 +193,7 @@ def test_filters_and_unmatched_reasons(alice, worker, session, signups, monkeypa
     assert ids("unmatched") == [deleted_site]
     [unlinked] = inbox(alice, filter="unmatched")["items"]
     assert (unlinked["status_reason"], unlinked["site_name"], unlinked["alias"]) == (
-        "not_linked", None, "ef56gh78@leaktrap.xyz")
+        "invalid_alias_association", None, "ef56gh78@leaktrap.xyz")
     [failure] = inbox(alice, filter="failed")["items"]
     assert (failure["status_reason"], failure["site_name"], failure["subject"]) == ("analysis_failed", "Example Shop", "Offer 3")
     # Unknown and unowned aliases have no owner: stored without details, shown to nobody.
@@ -210,7 +210,7 @@ def test_records_from_before_inbox_tracking_show_no_details(alice, session, acco
     session.commit()
     page = inbox(alice)
     [item] = page["items"]
-    assert (item["tracked"], item["unread"], item["status"]) == (False, False, "matched")
+    assert (item["tracked"], item["unread"], item["status"]) == (False, False, "unprocessed")
     assert (item["sender_email"], item["subject"], item["sender_name"]) == (None, None, None)
     assert page["unread"] == 0
     assert "Legacy subject" not in str(page) and "legacy@sender.example" not in str(page)

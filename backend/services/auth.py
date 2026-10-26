@@ -71,6 +71,10 @@ class AuthError(Exception):
     """Generic failure; the message is safe to show and reveals nothing about accounts."""
 
 
+class DisabledAccount(AuthError):
+    pass
+
+
 class RateLimited(Exception):
     pass
 
@@ -230,7 +234,8 @@ def create_session(session: Session, user_id: int, kind: str = "web", scopes: st
     return NewSession(token, csrf_token_for(token), row.id, row.expires_at)
 
 
-def login(session: Session, email: str, password: str, ip: str) -> NewSession:
+def verify_credentials(session: Session, email: str, password: str, ip: str, *,
+                       require_verified: bool = False, distinguish_disabled: bool = False) -> User:
     """Raises AuthError (generic), RateLimited, or PermissionError for an
     unverified account (only after the correct password)."""
     try:
@@ -249,15 +254,33 @@ def login(session: Session, email: str, password: str, ip: str) -> NewSession:
         record_event(session, "login_failed_ip", ip)
         record_event(session, "login_failed_account", email)
         session.commit()
+        if ok and user.disabled_at is not None and distinguish_disabled:
+            raise DisabledAccount("This account is disabled.")
         raise AuthError("Incorrect email or password.")
-    if user.email_verified_at is None and not settings.allow_unverified_login:
+    if user.email_verified_at is None and (require_verified or not settings.allow_unverified_login):
         session.commit()
         raise PermissionError("Verify your email address before signing in.")
     if _hasher.check_needs_rehash(user.password_hash):
         user.password_hash = _hasher.hash(password)
+    return user
+
+
+def login(session: Session, email: str, password: str, ip: str) -> NewSession:
+    user = verify_credentials(session, email, password, ip)
     created = create_session(session, user.id, "web", label="Web")
     session.commit()
     return created
+
+
+def login_mobile(session: Session, email: str, password: str, ip: str, label: str | None = None):
+    from backend.security import MOBILE_GRANTED_SCOPES
+
+    user = verify_credentials(session, email, password, ip, require_verified=True, distinguish_disabled=True)
+    created = create_session(session, user.id, "mobile", " ".join(sorted(MOBILE_GRANTED_SCOPES)),
+                             label=label or "Android device", lifetime=timedelta(days=settings.mobile_token_days))
+    email = user.email
+    session.commit()
+    return created, email, sorted(MOBILE_GRANTED_SCOPES)
 
 
 @dataclass(frozen=True)

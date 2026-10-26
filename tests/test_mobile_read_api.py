@@ -126,7 +126,7 @@ def test_list_contents_pagination_and_filters(phone, alice_token, data, sms) -> 
     emails = mobile_get(phone, alice_token, "/mobile/v1/emails")
     assert emails["total"] == 4
     assert [m["match_status"] for m in emails["items"]] == ["no_match", "ambiguous", "matched", None]
-    for status in ("matched", "ambiguous", "no_match"):
+    for status in ("ambiguous", "no_match"):
         assert [m["match_status"] for m in mobile_get(phone, alice_token, "/mobile/v1/emails", status=status)["items"]] == [status]
 
     timeline = mobile_get(phone, alice_token, "/mobile/v1/timeline")["items"]

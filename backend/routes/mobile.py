@@ -36,6 +36,7 @@ from backend.schemas.dashboard import (
     DashboardEmailDetail, DashboardEmailPage, DashboardSignupPage, SignupDetailResponse, Timeline,
 )
 from backend.schemas.signup import MAX_BIGINT
+from backend.schemas.auth import Credentials
 from backend.schemas.sms import SmsAnalysis, SmsInvestigation, SmsInvestigationPage, SmsSaveResponse
 from backend.security import client_ip, require_mobile
 from backend.services import auth as auth_service
@@ -109,6 +110,33 @@ class MobileMe(BaseModel):
     email_verified: bool
     scopes: list[str]
     device: MobileDevice
+
+
+class MobileLogin(Credentials):
+    device_label: str | None = Field(default=None, max_length=MAX_LABEL)
+
+    @field_validator("device_label")
+    @classmethod
+    def check_label(cls, value):
+        return MobilePairingStart.check_label(value)
+
+
+@router.post("/login", response_model=MobileToken, responses={401: {}, 403: {}, 429: {}})
+async def login_mobile(request: Request, response: Response, db: Session = Depends(get_db)):
+    data = await parse(request, MobileLogin)
+    try:
+        issued, email, scopes = await run_in_threadpool(
+            auth_service.login_mobile, db, data.email, data.password, client_ip(request), data.device_label)
+    except auth_service.DisabledAccount:
+        raise HTTPException(403, {"code": "account_disabled", "message": "This account is disabled."}) from None
+    except auth_service.AuthError:
+        raise HTTPException(401, {"code": "invalid_credentials", "message": "Incorrect email or password."}) from None
+    except PermissionError:
+        raise HTTPException(403, {"code": "email_unverified", "message": "Verify your email before signing in."}) from None
+    except RateLimited:
+        raise TOO_MANY from None
+    response.headers["Cache-Control"] = "no-store"
+    return MobileToken(token=issued.token, expires_at=issued.expires_at, email=email, scopes=scopes)
 
 
 # ---------- called by the app ----------

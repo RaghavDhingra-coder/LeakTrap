@@ -182,7 +182,7 @@ INBOX_NOT_FOUND = HTTPException(404, "Email not found")
 def get_inbox(
     limit: int = Limit,
     offset: int = Offset,
-    filter: Literal["all", "unread", "matched", "unmatched", "failed"] = "all",
+    filter: Literal["all", "unread", "matched", "unmatched", "failed", "unprocessed"] = "all",
     auth: AuthContext = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> InboxPage:

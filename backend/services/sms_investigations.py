@@ -47,7 +47,8 @@ def _evidence(analysis: Analysis) -> dict:
                       and e.meta.get("domain") and not e.meta.get("freemail")})
     return {
         "source": EVIDENCE_SOURCE,
-        "version": 1,
+        "version": 2,
+        "risk": analysis.risk,
         "dedup": analysis.dedup_key,
         "sender": {"type": analysis.sender["type"], "value": analysis.sender["value"]} if analysis.sender else None,
         "sender_key": sms_extract.sender_key(analysis.sender),

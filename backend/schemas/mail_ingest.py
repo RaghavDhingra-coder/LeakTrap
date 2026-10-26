@@ -88,7 +88,7 @@ class MailIngestResponse(BaseModel):
     )
     mail_log_id: int
     recipient_known: bool = Field(description="Whether the recipient is a stored alias.")
-    ingest_status: Literal["matched", "unmatched", "failed"] = Field(
+    ingest_status: Literal["matched", "unmatched", "failed", "unprocessed"] = Field(
         description="Whether the recipient was attributed to an account's signup."
     )
     status_reason: str | None = Field(description="Why the message is unmatched or failed.")

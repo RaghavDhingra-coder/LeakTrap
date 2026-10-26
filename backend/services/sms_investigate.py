@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from backend.models import Incident, MailLog, Signup
 from backend.services import sms_extract
+from backend.services.email_attribution import alias_link
 from backend.services.domains import normalize_domain, normalize_email, parent_domains
 from backend.services.ownership import owned_by
 from backend.services.sms_extract import Entity, Extraction
@@ -89,6 +90,7 @@ class Analysis:
     missing: list[str]
     warnings: list[str]
     dedup_key: str
+    risk: dict | None = None
 
 
 def _compress(text: str) -> str:
@@ -333,8 +335,10 @@ def investigate(
     missing = [] if ranked else _missing_evidence(active, sender, prior)
     sender_notes = _sender_notes(sender)
     logger.info("SMS analysis: entities=%d candidates=%d status=%s", len(active), len(ranked), status)
+    from backend.services.sms_risk import assess
+    risk = assess(extraction, entities, excluded, ranked, signups)
     return Analysis(extraction, entities, excluded, sender, sender_notes, received_at, label, status, ranked,
-                    identifiers, missing, warnings, dedup_key(user_id, extraction.text, sender, received_at))
+                    identifiers, missing, warnings, dedup_key(user_id, extraction.text, sender, received_at), risk)
 
 
 def _related_activity(session: Session, user_id: int, candidates: list[SourceCandidate]) -> None:
@@ -342,7 +346,7 @@ def _related_activity(session: Session, user_id: int, candidates: list[SourceCan
     if not ids:
         return
     mail = dict((sid, (n, last)) for sid, n, last in session.execute(
-        select(MailLog.signup_id, func.count(), func.max(MailLog.received_at))
+        select(MailLog.signup_id, func.count(), func.max(MailLog.received_at)).join(Signup, alias_link(user_id))
         .where(owned_by(MailLog.user_id, user_id), MailLog.signup_id.in_(ids)).group_by(MailLog.signup_id)
     ).all())
     for cand in candidates:

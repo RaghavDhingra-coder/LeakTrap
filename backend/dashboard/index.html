@@ -258,6 +258,7 @@
               <button type="button" data-filter="matched" aria-pressed="false">Matched</button>
               <button type="button" data-filter="unmatched" aria-pressed="false">Unmatched</button>
               <button type="button" data-filter="failed" aria-pressed="false">Failed</button>
+              <button type="button" data-filter="unprocessed" aria-pressed="false">Unprocessed</button>
             </div>
           </div>
           <div class="status" data-status aria-live="polite"></div>
@@ -425,7 +426,7 @@
           <header class="page-head">
             <div>
               <h2>Leak activity</h2>
-              <p class="page-desc">Email received at your aliases. Message bodies, subjects and full sender addresses are never stored or shown. Sender domains are claims and can be forged.</p>
+              <p class="page-desc">Email attributed by its envelope recipient alias. Matched does not verify the sender or mean the message is safe. Message bodies are not stored.</p>
             </div>
           </header>
           <div class="toolbar">
@@ -433,8 +434,8 @@
             <select id="email-status">
               <option value="">All</option>
               <option value="matched">Matched</option>
-              <option value="ambiguous">Ambiguous</option>
-              <option value="no_match">No match</option>
+              <option value="unmatched">Unmatched</option>
+              <option value="failed">Failed</option>
               <option value="unprocessed">Unprocessed</option>
             </select>
           </div>
@@ -443,7 +444,7 @@
             <table class="table">
               <caption class="sr-only">Received email, newest first</caption>
               <thead><tr>
-                <th scope="col">Received</th><th scope="col">Status</th><th scope="col">Confidence</th>
+                <th scope="col">Received</th><th scope="col">Status</th><th scope="col">Recipient alias</th>
                 <th scope="col">Website</th><th scope="col">Sender domain</th><th scope="col"><span class="sr-only">Actions</span></th>
               </tr></thead>
               <tbody id="emails-body"></tbody>

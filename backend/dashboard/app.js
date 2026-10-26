@@ -8,11 +8,13 @@
 const API = "/dashboard/api";
 const PAGE_SIZE = 20;
 const STATUS_LABELS = {
-  matched: "Matched", ambiguous: "Ambiguous", no_match: "No match", unprocessed: "Unprocessed",
+  matched: "Matched", unmatched: "Unmatched", failed: "Failed", ambiguous: "Ambiguous", no_match: "No match", unprocessed: "Unprocessed",
 };
 const ACTION_LABELS = { accepted: "Accepted", declined: "Declined", notice_only: "Only saw the notice" };
-const INBOX_STATUS_LABELS = { matched: "Matched", unmatched: "Unmatched", failed: "Failed" };
+const INBOX_STATUS_LABELS = { unprocessed: "Unprocessed", matched: "Matched", unmatched: "Unmatched", failed: "Failed" };
 const REASON_LABELS = {
+  legacy_unprocessed: "This historical record has no recorded recipient attribution.",
+  invalid_alias_association: "The recorded recipient no longer has a valid association with this account and website.",
   not_linked: "Not linked to any of your websites. The website may have been deleted.",
   analysis_failed: "Linked to your website, but the leak analysis failed. It runs again if the message is redelivered.",
   unknown_alias: "Sent to an address that is not one of your aliases.",
@@ -606,8 +608,8 @@ async function loadOverview() {
 function renderBreakdown(d) {
   const box = document.getElementById("match-breakdown");
   const parts = [
-    ["Matched", d.matched, "tone-accent"], ["Ambiguous", d.ambiguous, "tone-warn"],
-    ["No match", d.no_match, "tone-muted"], ["Unprocessed", d.unprocessed, "tone-faint"],
+    ["Matched", d.matched, "tone-accent"], ["Failed", d.failed, "tone-warn"],
+    ["Unmatched", d.unmatched, "tone-muted"], ["Unprocessed", d.unprocessed, "tone-faint"],
   ];
   const total = d.emails_total;
   if (!total) {
@@ -751,7 +753,7 @@ async function showWebsite(id) {
       d.receipts.length ? list(d.receipts.map((r) => `${formatTime(r.recorded_at)} — ${ACTION_LABELS[r.action] ?? "Not recorded"}`
         + `${r.evidence_basis === "user_reported" ? " · user-reported (not verified)" : ""}`)) : el("p", { class: "hint" }, "None yet."),
       el("h4", {}, "Email received at this alias"),
-      d.emails.length ? list(d.emails.map((m) => el("span", {}, formatTime(m.received_at), " ", statusBadge(m.match_status),
+      d.emails.length ? list(d.emails.map((m) => el("span", {}, formatTime(m.received_at), " ", statusBadge(m.status),
         m.sender_domain ? ` from ${m.sender_domain} (claimed)` : ""))) : el("p", { class: "hint" }, "None yet."),
       el("h4", {}, "SMS investigations"),
       d.sms_investigations?.length ? el("ul", {}, ...d.sms_investigations.map((m) => el("li", {},
@@ -992,6 +994,7 @@ function inboxCard(m, { compact = false } = {}) {
 }
 
 const INBOX_EMPTY = {
+  unprocessed: ["No unprocessed email.", "Historical records without recorded recipient attribution appear here."],
   all: ["No email has arrived at your aliases yet.", "Email sent to any of your aliases appears here within about 30 seconds."],
   unread: ["No unread email.", "You are all caught up."],
   matched: ["No email linked to your websites.", "Messages sent to one of your aliases are linked to its website."],
@@ -1050,7 +1053,6 @@ function inboxDetailRows(d) {
     ["Subject", d.tracked ? (d.subject ?? "(no subject)") : "Not stored"],
     ["Sender domain (claimed)", d.sender_domain ?? "—"],
     ["Authentication (Cloudflare, unverified)", d.auth_results ?? "Not available"],
-    ["Leak match", d.match_status ? el("span", {}, statusBadge(d.match_status), ` confidence: ${d.match_confidence ?? "—"}`) : "Not analysed"],
     ["Read", d.read_at ? formatTime(d.read_at) : (d.tracked ? "Unread" : "—")],
   ].filter(Boolean);
 }
@@ -1321,6 +1323,12 @@ function renderSmsAnalysis(a) {
     el("button", { type: "submit", class: "btn btn-secondary btn-sm" }, icon("plus"), "Add and re-analyse"));
   fill(result,
     overview,
+    el("h3", { class: "section-title" }, "Scam assessment"),
+    a.risk ? el("div", { class: "notice" },
+      el("strong", {}, `${a.risk.assessment} · ${a.risk.risk_level}`),
+      list(a.risk.reasons.map((r) => `${r.message}${r.evidence ? ` (${r.evidence})` : ""}`)),
+      list(a.risk.next_steps), el("p", {}, a.risk.notice))
+      : el("p", {}, "No scam assessment is stored for this investigation."),
     a.warnings.length ? el("div", { class: "notice", role: "note" }, list(a.warnings)) : null,
     el("h3", { class: "section-title" }, "Possible sources"), ...candidates,
     el("h3", { class: "section-title" }, "Personal and other details found"),
@@ -1575,8 +1583,8 @@ async function loadEmails() {
     const page = await getJSON(`${API}/emails?${params}`);
     body.replaceChildren(...page.items.map((m) => el("tr", {},
       el("td", { class: "time" }, formatTime(m.received_at)),
-      el("td", {}, statusBadge(m.match_status)),
-      el("td", {}, m.match_confidence ?? "—"),
+      el("td", {}, statusBadge(m.status)),
+      el("td", {}, m.alias ?? "—"),
       el("td", {}, m.site_name ? siteLabel(m.site_name, m.site_domain) : el("span", { class: "dim" }, m.recipient_known ? "Known alias" : "Unknown alias")),
       el("td", {}, m.sender_domain ? el("span", { class: "marker" }, m.sender_domain) : "—"),
       el("td", { class: "actions" }, el("button", { type: "button", class: "btn btn-secondary btn-sm",
@@ -1602,7 +1610,7 @@ async function showEmailDetail(id) {
   try {
     const d = await getJSON(`${API}/emails/${encodeURIComponent(id)}`);
     const rows = [
-      ["Status", statusBadge(d.match_status)], ["Confidence", d.match_confidence ?? "—"],
+      ["Status", statusBadge(d.status)], ["Recipient alias", d.alias ?? "—"], ["Reason", d.status_reason ?? "—"],
       ["Received", formatTime(d.received_at)], ["Recorded", formatTime(d.created_at)],
       ["Website", d.signup_id ? `#${d.signup_id} ${siteLabel(d.site_name, d.site_domain)}` : "Recipient alias not recognised"],
       ["Sender domain (claimed)", d.sender_domain ?? "—"],

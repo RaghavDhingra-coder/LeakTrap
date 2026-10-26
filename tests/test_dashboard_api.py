@@ -62,11 +62,11 @@ def data(session: Session, accounts) -> dict:
         MailLog(user_id=alice, signup_id=shop.id, alias=shop.alias, sender="legacy@sender.example",
                 subject="Secret subject", received_at=T0),
         MailLog(user_id=alice, signup_id=shop.id, alias=shop.alias, sender_domain="broker.example",
-                match_status="matched", match_confidence="high", message_id_hash="f" * 64,
+                ingest_status="matched", match_status="matched", match_confidence="high", message_id_hash="f" * 64,
                 received_at=T0 + timedelta(hours=1)),
         MailLog(user_id=alice, signup_id=news.id, alias=news.alias, sender_domain="shop.example.com",
-                match_status="ambiguous", match_confidence="medium", received_at=T0 + timedelta(hours=2)),
-        MailLog(user_id=alice, alias="zz99@leaktrap.xyz", match_status="no_match", match_confidence="none",
+                ingest_status="matched", match_status="ambiguous", match_confidence="medium", received_at=T0 + timedelta(hours=2)),
+        MailLog(user_id=alice, alias="zz99@leaktrap.xyz", ingest_status="unmatched", match_status="no_match", match_confidence="none",
                 received_at=T0 + timedelta(hours=3)),
         MailLog(user_id=bob, signup_id=bob_site.id, subject="Bob mail", match_status="matched", received_at=T0),
         MailLog(signup_id=historical.id, match_status="matched", received_at=T0),  # unowned
@@ -123,7 +123,7 @@ def test_empty_dataset(client) -> None:
 def test_overview_counts_only_own_records(client, data) -> None:
     o = get(client, "/dashboard/api/overview")
     assert (o["websites"], o["aliases"], o["nicknames"], o["receipts"], o["investigations"]) == (3, 2, 1, 1, 1)
-    assert (o["emails_total"], o["matched"], o["ambiguous"], o["no_match"], o["unprocessed"]) == (4, 1, 1, 1, 1)
+    assert (o["emails_total"], o["matched"], o["ambiguous"], o["no_match"], o["unprocessed"]) == (4, 2, 1, 1, 1)
     assert "not proof" in o["notice"]
 
 
@@ -132,7 +132,7 @@ def test_my_websites_shows_own_aliases_with_counts(client, data) -> None:
     assert page["total"] == 3
     assert [s["id"] for s in page["items"]] == [data["bank"], data["news"], data["shop"]]  # newest first
     shop = next(s for s in page["items"] if s["id"] == data["shop"])
-    assert (shop["alias"], shop["nickname"], shop["receipt_count"], shop["email_count"]) == ("ab12cd34@leaktrap.xyz", "Ocelot", 1, 2)
+    assert (shop["alias"], shop["nickname"], shop["receipt_count"], shop["email_count"]) == ("ab12cd34@leaktrap.xyz", "Ocelot", 1, 1)
     assert not {"surname_variant", "user_id"} & set(shop)
 
 
@@ -164,7 +164,7 @@ def test_website_detail(client, data) -> None:
     d = get(client, f"/dashboard/api/signups/{data['shop']}")
     assert (d["alias"], d["nickname"], d["surname_variant"], d["site_domain"]) == ("ab12cd34@leaktrap.xyz", "Ocelot", "Dhingraa", "shop.example.com")
     assert [(r["action"], r["evidence_basis"]) for r in d["receipts"]] == [("accepted", "user_reported")]
-    assert [e["match_status"] for e in d["emails"]] == ["matched", None]
+    assert [e["match_status"] for e in d["emails"]] == ["matched"]
     assert "not proof" in d["notice"]
 
 
@@ -181,12 +181,15 @@ def test_email_activity_newest_first_with_site(client, data) -> None:
 @pytest.mark.parametrize("status", ["matched", "ambiguous", "no_match", "unprocessed"])
 def test_email_status_filter(client, data, status) -> None:
     page = get(client, "/dashboard/api/emails", status=status)
-    assert page["total"] == 1
-    assert page["items"][0]["match_status"] == (None if status == "unprocessed" else status)
+    assert page["total"] == (2 if status == "matched" else 1)
+    if status in ("matched", "unprocessed"):
+        assert all(item["status"] == status for item in page["items"])
+    else:
+        assert page["items"][0]["match_status"] == status
 
 
 def test_email_detail_uses_only_stored_data(client, data) -> None:
-    matched_id = get(client, "/dashboard/api/emails", status="matched")["items"][0]["id"]
+    matched_id = next(m["id"] for m in get(client, "/dashboard/api/emails", status="matched")["items"] if m["match_status"] == "matched")
     detail = get(client, f"/dashboard/api/emails/{matched_id}")
     assert (detail["match_status"], detail["match_confidence"]) == ("matched", "high")
     assert detail["limitations"] == list(matcher.LIMITATIONS)

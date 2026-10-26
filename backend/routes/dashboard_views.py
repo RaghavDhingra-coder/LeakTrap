@@ -35,7 +35,7 @@ Offset = Query(0, ge=0, le=MAX_BIGINT)
 TimelineLimit = Query(30, ge=1, le=MAX_PAGE_SIZE)
 SignupSearch = Query(None, max_length=100, description="Search site name, domain, alias or nickname.")
 SignupFilter = Literal["all", "with_receipts", "with_emails", "real_name"]
-EmailStatus = Literal["matched", "ambiguous", "no_match", "unprocessed"]
+EmailStatus = Literal["matched", "unmatched", "failed", "unprocessed", "ambiguous", "no_match"]
 
 SIGNUP_NOT_FOUND = "Not found"
 EMAIL_NOT_FOUND = "Email record not found"

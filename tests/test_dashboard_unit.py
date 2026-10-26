@@ -151,7 +151,7 @@ def test_navigation_has_every_section_in_order(local) -> None:
     for panel in tabs:
         assert f'id="view-{panel}" role="tabpanel" aria-labelledby="tab-{panel}"' in html
     filters = re.findall(r'data-filter="(\w+)" aria-pressed', html)
-    assert filters == ["all", "unread", "matched", "unmatched", "failed"]
+    assert filters == ["all", "unread", "matched", "unmatched", "failed", "unprocessed"]
     assert 'id="notifications"' in html and 'aria-live="polite"' in html and 'id="unread-badge"' in html
     assert 'id="inbox-retry"' in html  # error state offers a retry
 

@@ -186,7 +186,7 @@ def test_unowned_alias_scope(client, session) -> None:
     session.add(Signup(site_name="Anon Shop", site_domain="anon.example", alias="aa11@leaktrap.xyz"))
     session.commit()
     body = ingest(client, recipient="aa11@leaktrap.xyz", from_header="x@anon.example").json()
-    assert (body["match_status"], body["recipient_known"]) == ("matched", True)
+    assert (body["match_status"], body["recipient_known"]) == ("no_match", True)
     assert (body["ingest_status"], body["status_reason"]) == ("unmatched", "unowned_alias")
     [log] = mail_logs(session)
     assert log.user_id is None and log.subject is None and log.sender is None
