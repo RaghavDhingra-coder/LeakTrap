@@ -77,6 +77,7 @@ class SignupRow:
     site_domain: str | None
     alias_status: str
     alias_status_changed_at: datetime
+    block_promotional_emails: bool
     alias: str | None
     nickname: str | None
     real_name_required: bool
@@ -132,6 +133,7 @@ def list_signups(
     items = [
         SignupRow(id=s.id, site_name=s.site_name, site_domain=s.site_domain,
                   alias_status=s.alias_status, alias_status_changed_at=s.alias_status_changed_at,
+                  block_promotional_emails=s.block_promotional_emails,
                   alias=s.alias, nickname=s.nickname,
                   real_name_required=s.real_name_required, receipt_count=r, email_count=e, created_at=s.created_at)
         for s, r, e in rows

@@ -55,7 +55,8 @@ def signup_detail(db: Session, user_id: int, signup_id: int) -> SignupDetailResp
     s = detail.signup
     return SignupDetailResponse(
         id=s.id, site_name=s.site_name, site_domain=s.site_domain, alias_status=s.alias_status,
-        alias_status_changed_at=s.alias_status_changed_at, alias=s.alias, nickname=s.nickname,
+        alias_status_changed_at=s.alias_status_changed_at,
+        block_promotional_emails=s.block_promotional_emails, alias=s.alias, nickname=s.nickname,
         surname_variant=s.surname_variant, real_name_required=s.real_name_required, real_name_used=s.real_name_used,
         created_at=s.created_at,
         receipts=[SignupReceipt(

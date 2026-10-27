@@ -71,7 +71,7 @@ async def alias_status(
     request: Request,
     config: IngestConfig = Depends(require_ingest_auth),
     db: Session = Depends(get_db),
-) -> dict[str, str]:
+) -> dict[str, str | bool]:
     """Return only the status for the exact routed alias; fail closed on invalid input."""
     require_json(request)
     body = await read_limited_body(request, 1024)
@@ -91,7 +91,9 @@ async def alias_status(
         return {"status": "unverifiable"}
     if signup.alias_status not in ("active", "revoked"):
         return {"status": "unverifiable"}
-    return {"status": signup.alias_status}
+    if signup.alias_status == "active":
+        return {"status": "active", "block_promotional_emails": signup.block_promotional_emails}
+    return {"status": "revoked"}
 
 
 @router.post(

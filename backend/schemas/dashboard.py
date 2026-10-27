@@ -43,6 +43,7 @@ class DashboardSignup(BaseModel):
     site_domain: str | None
     alias_status: Literal["active", "revoked"]
     alias_status_changed_at: datetime
+    block_promotional_emails: bool
     alias: str | None
     nickname: str | None
     real_name_required: bool
@@ -124,6 +125,7 @@ class SignupDetailResponse(BaseModel):
     site_domain: str | None
     alias_status: Literal["active", "revoked"]
     alias_status_changed_at: datetime
+    block_promotional_emails: bool
     alias: str | None
     nickname: str | None
     surname_variant: str | None

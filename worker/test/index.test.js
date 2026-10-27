@@ -37,7 +37,7 @@ function fakeFetch(result) {
   const impl = async (url, init) => {
     if (new URL(url).pathname.endsWith("/alias-status")) {
       statusCalls.push({ url, init });
-      return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+      return new Response(JSON.stringify({ status: "active", block_promotional_emails: false }), { status: 200 });
     }
     calls.push({ url, init });
     if (result instanceof Error) throw result;
@@ -77,7 +77,7 @@ function scriptedFetch(...steps) {
   const impl = (url, init) => {
     if (new URL(url).pathname.endsWith("/alias-status")) {
       statusCalls.push({ url, init });
-      return Promise.resolve(new Response(JSON.stringify({ status: "active" }), { status: 200 }));
+      return Promise.resolve(new Response(JSON.stringify({ status: "active", block_promotional_emails: false }), { status: 200 }));
     }
     const step = steps[Math.min(calls.length, steps.length - 1)];
     calls.push({ url, init, at: Date.now() });
@@ -239,7 +239,7 @@ test("revocation before a new delivery blocks it; restoration permits a later de
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
     return url.endsWith("/alias-status")
-      ? new Response(JSON.stringify({ status }), { status: 200 })
+      ? new Response(JSON.stringify({ status, ...(status === "active" ? { block_promotional_emails: false } : {}) }), { status: 200 })
       : new Response(null, { status: 201 });
   };
   const first = fakeMessage();
@@ -271,8 +271,8 @@ test("failed status retry cannot bypass the check or reach fallback", async () =
 });
 
 for (const response of [
-  new Response(JSON.stringify({ status: "active" }), { status: 201 }),
-  new Response(JSON.stringify({ status: "active" }), { status: 302, headers: { location: "https://other.example/" } }),
+  new Response(JSON.stringify({ status: "active", block_promotional_emails: false }), { status: 201 }),
+  new Response(JSON.stringify({ status: "active", block_promotional_emails: false }), { status: 302, headers: { location: "https://other.example/" } }),
   new Response("{invalid", { status: 200 }),
 ]) {
   test(`unexpected status response HTTP ${response.status} blocks forwarding`, async () => {
@@ -293,7 +293,7 @@ test("valid ingestion and successful forwarding", async () => {
   const fetchImpl = async (url, init) => {
     if (new URL(url).pathname.endsWith("/alias-status")) {
       order.push("status");
-      return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+      return new Response(JSON.stringify({ status: "active", block_promotional_emails: false }), { status: 200 });
     }
     order.push("record"); fetchImpl.calls.push({ url, init }); return new Response(null, { status: 201 });
   };
@@ -618,7 +618,7 @@ test("duplicate Message-ID: a retried delivery sends the identical payload and H
 test("redaction: secret values never reach the logs, even inside runtime error messages", async () => {
   const fetchImpl = async (url) => {
     if (new URL(url).pathname.endsWith("/alias-status")) {
-      return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+      return new Response(JSON.stringify({ status: "active", block_promotional_emails: false }), { status: 200 });
     }
     throw new Error(`upstream said Bearer ${SECRET} was bad for ${FALLBACK}`);
   };

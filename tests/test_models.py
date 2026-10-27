@@ -24,7 +24,7 @@ REQUIRED_COLUMNS = {
     "users": {"id", "created_at"},
     "signups": {
         "id", "user_id", "site_name", "site_domain", "alias", "nickname",
-        "surname_variant", "real_name_required", "real_name_used",
+        "surname_variant", "real_name_required", "real_name_used", "block_promotional_emails",
         "created_at", "updated_at",
     },
     "consent_receipts": {
@@ -73,6 +73,7 @@ FOREIGN_KEYS = {
 
 NOT_NULL_COLUMNS = {
     ("signups", "site_name"),
+    ("signups", "block_promotional_emails"),
     ("signups", "real_name_required"),
     ("signups", "real_name_used"),
     ("consent_receipts", "privacy_notice_text"),

@@ -5,7 +5,7 @@ import unicodedata
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from backend.services.domains import normalize_domain
 
@@ -89,6 +89,7 @@ class SignupRead(BaseModel):
     site_domain: str | None
     alias_status: Literal["active", "revoked"]
     alias_status_changed_at: datetime
+    block_promotional_emails: bool
     alias: str | None = Field(
         description="Generated address. Not verified; mail routing is configured separately."
     )
@@ -110,3 +111,8 @@ class SignupList(BaseModel):
 class SignupAliasStatusUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     alias_status: Literal["active", "revoked"]
+
+
+class SignupPromotionalFilterUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    block_promotional_emails: StrictBool

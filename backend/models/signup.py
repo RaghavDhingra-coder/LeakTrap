@@ -31,6 +31,9 @@ class Signup(IdMixin, TimestampMixin, Base):
     alias_status_changed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+    block_promotional_emails: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     # Full email address (local part and domain), up to the RFC 5321 limit.
     alias: Mapped[str | None] = mapped_column(String(320))
     nickname: Mapped[str | None] = mapped_column(String(100))

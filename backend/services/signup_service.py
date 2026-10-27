@@ -139,6 +139,19 @@ def set_alias_status(session: Session, user_id: int, signup_id: int, alias_statu
     return signup
 
 
+def set_promotional_filter(session: Session, user_id: int, signup_id: int, enabled: bool) -> Signup | None:
+    """Persist the owner's per-alias preference; do not alter alias status or mail history."""
+    signup = get_signup(session, user_id, signup_id)
+    if signup is None:
+        return None
+    if not signup.alias:
+        raise ValueError("This website does not have an alias.")
+    signup.block_promotional_emails = enabled
+    session.commit()
+    session.refresh(signup)
+    return signup
+
+
 def find_by_exact_domain(
     session: Session, user_id: int, site_domain: str, limit: int = 10
 ) -> list[Signup]:

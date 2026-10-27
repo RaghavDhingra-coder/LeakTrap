@@ -756,6 +756,7 @@ async function showWebsite(id) {
     ];
     body.replaceChildren(
       el("dl", {}, ...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
+      d.alias ? promotionalFilterControl(d) : null,
       el("div", { class: "row detail-actions" }, d.alias ? copyButton("alias", d.alias) : null, d.nickname ? copyButton("nickname", d.nickname) : null,
         d.alias ? el("button", { type: "button", class: `btn ${d.alias_status === "revoked" ? "btn-primary" : "btn-secondary"}`,
           onclick: () => setWebsiteAliasStatus(d, d.alias_status === "revoked" ? "active" : "revoked") },
@@ -780,6 +781,30 @@ async function showWebsite(id) {
     body.replaceChildren(el("p", { class: "error", role: "alert" }, error.message));
   }
   panel.focus();
+}
+
+function promotionalFilterControl(signup) {
+  const input = el("input", { type: "checkbox", "aria-label": `Block promotional emails for ${signup.site_name}` });
+  input.checked = signup.block_promotional_emails === true;
+  input.addEventListener("change", async () => {
+    const enabled = input.checked;
+    input.disabled = true;
+    try {
+      await api(`/signups/${encodeURIComponent(signup.id)}/promotional-filter`, {
+        method: "PATCH", body: { block_promotional_emails: enabled },
+      });
+      toast(`Promotional email filter ${enabled ? "enabled" : "disabled"} for ${signup.site_name}.`);
+      await Promise.all([loadWebsites(), showWebsite(signup.id)]);
+    } catch (error) {
+      input.checked = !enabled;
+      input.disabled = false;
+      toast(error.message, "error");
+    }
+  });
+  return el("div", { class: "alias-filter-control" },
+    el("label", { class: "check-label" }, input, " Block promotional emails"),
+    el("p", { class: "hint" },
+      "Filters promotional messages while allowing receipts, account alerts, and other important emails. Uncertain messages are allowed."));
 }
 
 async function setWebsiteAliasStatus(signup, aliasStatus) {

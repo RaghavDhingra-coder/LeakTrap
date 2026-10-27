@@ -20,6 +20,8 @@
 //
 // Logs never contain addresses, subjects, secrets or message content.
 
+import { classifyPromotionalMetadata } from "./promotional.js";
+
 const MAX_HEADER_LENGTH = 998;
 // Must match MAX_AUTH_RESULTS_LENGTH in backend/schemas/mail_ingest.py.
 const MAX_AUTH_RESULTS_LENGTH = 2000;
@@ -47,6 +49,21 @@ function aliasStatusEndpoint(ingestUrl) {
 function header(message, name, maxLength = MAX_HEADER_LENGTH) {
   const value = message.headers?.get(name);
   return value ? value.slice(0, maxLength) : null;
+}
+
+function promotionalAssessment(message) {
+  try {
+    const get = (name) => message.headers?.get(name) ?? null;
+    return classifyPromotionalMetadata({
+      subject: get("subject"),
+      listId: get("list-id"),
+      listUnsubscribe: get("list-unsubscribe"),
+      from: get("from"),
+      replyTo: get("reply-to"),
+    });
+  } catch {
+    return { outcome: "uncertain", reason: "malformed" };
+  }
 }
 
 export function buildPayload(message, receivedAt = new Date()) {
@@ -271,7 +288,9 @@ async function checkAliasStatus(recipient, env, fetchImpl, timeouts) {
         if (raw.length > 256) return { ok: false, reason: "status response exceeded size limit" };
         body = JSON.parse(raw);
       } catch { return { ok: false, reason: "status response was not JSON" }; }
-      if (body?.status === "active") return { ok: true };
+      if (body?.status === "active" && typeof body.block_promotional_emails === "boolean") {
+        return { ok: true, blockPromotionalEmails: body.block_promotional_emails };
+      }
       if (body?.status === "revoked") return { ok: false, revoked: true, reason: "alias is revoked" };
       return { ok: false, reason: "alias status is unverifiable" };
     } catch (error) {
@@ -304,6 +323,16 @@ export async function handleEmail(message, env, fetchImpl = fetch, { timeouts = 
     message.setReject(reason);
     log(status.revoked ? "info" : "error", "alias_status", status.reason, env);
     return { outcome: status.revoked ? "alias_revoked" : "alias_unverified" };
+  }
+
+  if (status.blockPromotionalEmails) {
+    const assessment = promotionalAssessment(message);
+    if (assessment.outcome === "promotional") {
+      message.setReject("Promotional email blocked by recipient preference");
+      log("info", "promotional_filter", `blocked (${assessment.reason})`, env);
+      return { outcome: "promotional_blocked" };
+    }
+    // Transactional and uncertain mail continue through the usual forwarding path.
   }
 
   const fallback = parseFallbackAddress(env.FALLBACK_ADDRESS);

@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.database import get_db
-from backend.schemas.signup import MAX_BIGINT, SignupAliasStatusUpdate, SignupCreate, SignupList, SignupRead
+from backend.schemas.signup import (
+    MAX_BIGINT, SignupAliasStatusUpdate, SignupCreate, SignupList, SignupPromotionalFilterUpdate, SignupRead,
+)
 from backend.security import require_scope, require_user
 from backend.services import signup_service
 from backend.services.alias_generator import (
@@ -106,6 +108,25 @@ def set_alias_status(
     """Revoke or restore the caller's own generated alias without deleting history."""
     try:
         signup = signup_service.set_alias_status(db, auth.user_id, signup_id, payload.alias_status)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    if signup is None:
+        raise NOT_FOUND
+    return SignupRead.model_validate(signup)
+
+
+@router.patch("/{signup_id}/promotional-filter", response_model=SignupRead,
+              responses={401: {}, 404: {}, 409: {}, 422: {}})
+def set_promotional_filter(
+    payload: SignupPromotionalFilterUpdate,
+    signup_id: int = SignupId,
+    auth: AuthContext = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> SignupRead:
+    try:
+        signup = signup_service.set_promotional_filter(
+            db, auth.user_id, signup_id, payload.block_promotional_emails
+        )
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
     if signup is None:

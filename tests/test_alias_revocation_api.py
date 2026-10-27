@@ -19,7 +19,7 @@ def test_revoke_restore_worker_status_and_preserved_history(alice, bob, worker, 
     listed = alice.get("/signups").json()
     item = next(row for row in listed["items"] if row["id"] == signup.id)
     assert item["alias_status"] == "active"
-    assert check_status(worker, signup.alias).json() == {"status": "active"}
+    assert check_status(worker, signup.alias).json() == {"status": "active", "block_promotional_emails": False}
 
     revoked = alice.patch(f"/signups/{signup.id}/alias-status", json={"alias_status": "revoked"})
     assert revoked.status_code == 200, revoked.text
@@ -27,7 +27,7 @@ def test_revoke_restore_worker_status_and_preserved_history(alice, bob, worker, 
     assert datetime.fromisoformat(revoked.json()["alias_status_changed_at"])
     session.expire_all()  # Read the saved value again, not the signup object held by the fixture.
     assert check_status(worker, signup.alias).json() == {"status": "revoked"}
-    assert check_status(worker, signups["news"].alias).json() == {"status": "active"}
+    assert check_status(worker, signups["news"].alias).json() == {"status": "active", "block_promotional_emails": False}
     assert bob.patch(f"/signups/{signup.id}/alias-status", json={"alias_status": "active"}).status_code == 404
 
     # The ingest endpoint independently refuses revoked mail and retains the existing message.
@@ -40,7 +40,7 @@ def test_revoke_restore_worker_status_and_preserved_history(alice, bob, worker, 
     restored = alice.patch(f"/signups/{signup.id}/alias-status", json={"alias_status": "active"})
     assert restored.status_code == 200 and restored.json()["alias_status"] == "active"
     session.expire_all()
-    assert check_status(worker, signup.alias).json() == {"status": "active"}
+    assert check_status(worker, signup.alias).json() == {"status": "active", "block_promotional_emails": False}
 
 
 def test_worker_status_is_secret_authenticated_and_fail_closed(worker, signups):
@@ -56,7 +56,7 @@ def test_alias_status_validation_and_revoked_alias_not_autofilled(alice, worker,
     signup = signups["shop"]
     signups["news"].site_domain = "news.example.com"
     session.commit()
-    assert check_status(worker, signups["news"].alias).json() == {"status": "active"}
+    assert check_status(worker, signups["news"].alias).json() == {"status": "active", "block_promotional_emails": False}
     assert alice.patch(f"/signups/{signup.id}/alias-status", json={"alias_status": "paused"}).status_code == 422
     assert alice.patch("/signups/987654321/alias-status", json={"alias_status": "revoked"}).status_code == 404
     assert alice.patch(f"/signups/{signup.id}/alias-status", json={"alias_status": "revoked", "user_id": 1}).status_code == 422
