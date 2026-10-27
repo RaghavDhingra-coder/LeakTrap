@@ -9,6 +9,8 @@ import logging
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func, select
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -19,12 +21,19 @@ from backend.routes.common import read_limited_body, require_json, validation_er
 from backend.schemas.mail_ingest import MailIngestRequest, MailIngestResponse
 from backend.services import mail_ingest
 from backend.services.domains import normalize_domain
+from backend.services.domains import normalize_email
+from backend.models import Signup
 
 logger = logging.getLogger("leaktrace.ingest")
 
 MIN_SECRET_LENGTH = 32
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
+
+
+class AliasStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    recipient: str = Field(min_length=3, max_length=320)
 
 
 @dataclass(frozen=True)
@@ -55,6 +64,34 @@ def require_ingest_auth(
             401, "Invalid or missing credentials.", headers={"WWW-Authenticate": "Bearer"}
         )
     return config
+
+
+@router.post("/alias-status", responses={401: {}, 422: {}, 503: {}})
+async def alias_status(
+    request: Request,
+    config: IngestConfig = Depends(require_ingest_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Return only the status for the exact routed alias; fail closed on invalid input."""
+    require_json(request)
+    body = await read_limited_body(request, 1024)
+    try:
+        payload = AliasStatusRequest.model_validate_json(body)
+        recipient = normalize_email(payload.recipient)
+        alias_domain = normalize_domain(config.alias_domain or "")
+    except (ValidationError, ValueError):
+        raise HTTPException(422, "Recipient alias is invalid.") from None
+    if recipient.split("@", 1)[1] != alias_domain:
+        raise HTTPException(422, "Recipient is not at the alias domain.")
+
+    signup = db.scalar(select(Signup).where(
+        Signup.user_id.is_not(None), func.lower(Signup.alias) == recipient
+    ))
+    if signup is None:
+        return {"status": "unverifiable"}
+    if signup.alias_status not in ("active", "revoked"):
+        return {"status": "unverifiable"}
+    return {"status": signup.alias_status}
 
 
 @router.post(
@@ -99,6 +136,14 @@ async def ingest_email(
         raise HTTPException(503, "Alias domain is not configured.") from None
     if payload.recipient.split("@", 1)[1] != alias_domain:
         raise HTTPException(422, "Recipient is not at the alias domain.")
+
+    signup = db.scalar(select(Signup).where(
+        Signup.user_id.is_not(None), func.lower(Signup.alias) == payload.recipient
+    ))
+    if signup is not None and signup.alias_status != "active":
+        if signup.alias_status == "revoked":
+            raise HTTPException(410, "Alias is revoked.")
+        raise HTTPException(503, "Alias status is unavailable.")
 
     mail = mail_ingest.InboundMail(
         recipient=payload.recipient,

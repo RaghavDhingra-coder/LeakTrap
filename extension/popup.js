@@ -6,7 +6,7 @@
 // Fill in this popup. Nothing is ever submitted.
 import {
   ApiError, RECONNECT_MESSAGE, addNeverSite, buildFillPlan, buildReceiptPayload, buildSignupPayload, canInspectTab, copyText,
-  createApi, describePayload, describeScanStats, fillOptions, fillTargetCheck, hostnameFromTabUrl, normalizeNeverSites,
+  communityWarningText, createApi, describePayload, describeScanStats, fillOptions, fillTargetCheck, hostnameFromTabUrl, normalizeNeverSites,
   parseStoredAuth, policyUrlFromPage, removeNeverSite,
 } from "./src/lib.js";
 import { definitionList, el, show } from "./src/dom.js";
@@ -596,6 +596,19 @@ async function init() {
     $("current-site").textContent = host;
     $("site-name").value = host;
     $("site-domain").value = host;
+    if (state.api?.connected) {
+      try {
+        const reputation = await state.api.websiteReputation(host);
+        const message = communityWarningText(reputation);
+        if (message) {
+          const warning = $("community-warning");
+          warning.textContent = message;
+          warning.hidden = false;
+        }
+      } catch {
+        // A reputation lookup failure must not interrupt alias and receipt controls.
+      }
+    }
   } else {
     $("current-site").textContent = "This tab has no website address. Enter the site details below.";
   }

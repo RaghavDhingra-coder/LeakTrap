@@ -111,7 +111,8 @@ def test_me_requires_a_session(client, session) -> None:
     user = make_account(session, "alice@example.com")
     csrf = sign_in(client, session, user)
     me = client.get("/auth/me").json()
-    assert me == {"email": "alice@example.com", "email_verified": True, "csrf_token": csrf, "email_delivery_configured": False}
+    assert me == {"email": "alice@example.com", "email_verified": True, "csrf_token": csrf,
+                  "email_delivery_configured": False, "is_domain_verification_admin": False}
 
 
 def test_csrf_and_origin_are_required_for_state_changes(client, session) -> None:

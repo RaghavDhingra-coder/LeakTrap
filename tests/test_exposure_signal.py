@@ -9,7 +9,7 @@ from tests.test_sms_api import sites, analyze  # noqa: F401
 pytestmark = pytest.mark.integration
 
 
-def test_external_sender_to_facebook_alias_has_same_dashboard_mobile_signal(alice, worker, signups, accounts, session):
+def test_shared_mail_provider_to_facebook_alias_does_not_accuse_site(alice, worker, signups, accounts, session):
     signups["shop"].site_name = "Facebook"
     signups["shop"].site_domain = "facebook.com"
     session.commit()
@@ -21,13 +21,9 @@ def test_external_sender_to_facebook_alias_has_same_dashboard_mobile_signal(alic
     inbox = alice.get(f"/dashboard/api/inbox/{mail_id}").json()
     phone = worker.get(f"/mobile/v1/emails/{mail_id}", headers={"Authorization": f"Bearer {token}"}).json()
     assert web["status"] == inbox["status"] == phone["status"] == "matched"
-    assert web["exposure"] == inbox["exposure"] == phone["exposure"]
-    [signal] = web["exposure"]
-    assert (signal["site_name"], signal["marker_type"], signal["observed_source"], signal["expected_domain"]) == (
-        "Facebook", "recipient_alias", "gmail.com", "facebook.com")
-    assert "possible source" in signal["explanation"]
-    assert "does not prove" in signal["caveat"]
-    assert signal["signup_id"] == signups["shop"].id
+    assert web["exposure"] == inbox["exposure"] == phone["exposure"] == []
+    assert web["sender_attribution"]["status"] == "Unknown"
+    assert web["sender_attribution"]["sender_organization"] is None
     assert worker.get(f"/mobile/v1/emails/{mail_id}", headers={"Authorization": "Bearer invalid"}).status_code == 401
 
 
@@ -45,7 +41,8 @@ def test_new_email_mobile_list_matches_dashboard_inbox_evidence(alice, worker, s
     web = next(item for item in inbox["items"] if item["id"] == mail_id)
     for field in ("status", "alias", "site_name", "subject", "sender_email", "auth_results", "exposure"):
         assert row[field] == web[field]
-    assert row["exposure"][0]["site_name"] == "Facebook"
+    assert row["exposure"] == []
+    assert row["sender_attribution"]["status"] == "Unknown"
     assert row["sender_email"] == "mayur@gmail.com"
 
 
@@ -97,7 +94,7 @@ def test_own_sender_and_legacy_or_failed_records_have_no_exposure(alice, worker,
     assert alice.get(f"/dashboard/api/emails/{own}").json()["exposure"] == []
 
 
-def test_nickname_in_subject_suggests_second_site_without_changing_recipient_attribution(alice, worker, signups, session):
+def test_nickname_in_subject_does_not_suggest_second_site(alice, worker, signups, session):
     signups["news"].site_name = "Amazon"
     signups["news"].site_domain = "amazon.com"
     signups["news"].nickname = "Alice"
@@ -106,10 +103,8 @@ def test_nickname_in_subject_suggests_second_site_without_changing_recipient_att
                       from_header="Mayur <mayur@gmail.com>", subject="Hello Alice, your order")["mail_log_id"]
     row = alice.get(f"/dashboard/api/emails/{mail_id}").json()
     assert row["site_name"] == signups["shop"].site_name
-    assert {(e["site_name"], e["marker_type"]) for e in row["exposure"]} == {
-        ("Example Shop", "recipient_alias"), ("Amazon", "nickname_mention")}
-    nickname = next(e for e in row["exposure"] if e["site_name"] == "Amazon")
-    assert nickname["confidence"] == "low"
+    assert row["exposure"] == []
+    assert row["sender_attribution"]["status"] == "Unknown"
 
 
 def test_cross_user_nickname_never_leaks_through_email(alice, worker, signups, session):
@@ -165,12 +160,10 @@ def test_sender_subdomain_of_recorded_site_has_no_email_exposure(alice, worker, 
     assert row["exposure"] == []
 
 
-def test_alias_without_recorded_site_domain_is_possible_but_unverified(alice, worker, signups):
+def test_alias_without_recorded_site_domain_does_not_establish_exposure(alice, worker, signups):
     mail_id = deliver(worker, signups["news"].alias, 36,
                       from_header="Mayur <mayur@gmail.com>")["mail_log_id"]
     row = alice.get(f"/dashboard/api/emails/{mail_id}").json()
-    [signal] = row["exposure"]
-    assert signal["site_name"] == "Daily News"
-    assert signal["expected_domain"] is None
-    assert signal["confidence"] == "low"
-    assert "cannot be compared" in signal["explanation"]
+    assert row["exposure"] == []
+    assert row["sender_attribution"]["registered_domain"] is None
+    assert row["sender_attribution"]["possible_source"] is None

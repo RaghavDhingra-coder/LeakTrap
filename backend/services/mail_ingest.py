@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from backend.models import MailLog, Signup
 from backend.services import email_attribution, matcher
 from backend.services.domains import normalize_email
+from backend.services.sender_classification import classify_for_email
 
 logger = logging.getLogger("leaktrace.ingest")
 
@@ -218,6 +219,12 @@ def _reprocess(session: Session, mail: InboundMail, log: MailLog) -> IngestOutco
         return _outcome(session, log, True)
     log.match_status, log.match_confidence = analysed
     log.ingest_status, log.status_reason = "matched", None
+    log.sender_attribution = classify_for_email(
+        session,
+        site_name=signup.site_name, site_domain=signup.site_domain, alias=log.alias,
+        sender_domain=log.sender_domain, sender_address=log.sender, auth_results=log.auth_results,
+        alias_matched=True,
+    )
     try:
         session.commit()
     except Exception:
@@ -274,6 +281,16 @@ def process(session: Session, mail: InboundMail) -> IngestOutcome:
         sender_name=mail.sender_name if attributed else None,
         subject=mail.subject if attributed else None,
         auth_results=mail.auth_results if attributed else None,
+    )
+    log.sender_attribution = classify_for_email(
+        session,
+        site_name=signup.site_name if signup else None,
+        site_domain=signup.site_domain if signup else None,
+        alias=mail.recipient,
+        sender_domain=sender.split("@", 1)[1] if sender else None,
+        sender_address=sender if attributed else None,
+        auth_results=mail.auth_results if attributed else None,
+        alias_matched=bool(signup and reason is None and attributed),
     )
     try:
         session.add(log)

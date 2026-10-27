@@ -16,6 +16,8 @@ TABLES = {
     "complaint_drafts",
     "reports",
     "leak_edges",
+    "domain_evidence_cache",
+    "domain_verification_credentials",
 }
 
 REQUIRED_COLUMNS = {
@@ -49,6 +51,8 @@ REQUIRED_COLUMNS = {
         "id", "user_id", "source_type", "source_id", "target_type", "target_id",
         "relationship_type", "evidence", "confidence", "created_at",
     },
+    "domain_evidence_cache": {"domain", "evidence", "organization_claim", "fetched_at", "expires_at", "error_code"},
+    "domain_verification_credentials": {"id", "encrypted_api_key", "updated_at", "updated_by"},
 }
 
 # (table, column) -> (referenced "table.column", ON DELETE rule)
@@ -64,6 +68,7 @@ FOREIGN_KEYS = {
     ("complaint_drafts", "consent_receipt_id"): ("consent_receipts.id", "SET NULL"),
     ("reports", "user_id"): ("users.id", "RESTRICT"),
     ("leak_edges", "user_id"): ("users.id", "RESTRICT"),
+    ("domain_verification_credentials", "updated_by"): ("users.id", "SET NULL"),
 }
 
 NOT_NULL_COLUMNS = {
@@ -84,6 +89,11 @@ NOT_NULL_COLUMNS = {
     ("leak_edges", "target_type"),
     ("leak_edges", "target_id"),
     ("leak_edges", "relationship_type"),
+    ("domain_evidence_cache", "evidence"),
+    ("domain_evidence_cache", "fetched_at"),
+    ("domain_evidence_cache", "expires_at"),
+    ("domain_verification_credentials", "encrypted_api_key"),
+    ("domain_verification_credentials", "updated_at"),
 }
 
 
@@ -102,7 +112,7 @@ CASCADE_ALLOWED = {("user_sessions", "user_id"), ("extension_pairings", "user_id
 
 
 def test_all_models_exported() -> None:
-    assert len(models.__all__) == 13
+    assert len(models.__all__) == 15
     for name in models.__all__:
         assert getattr(models, name).__tablename__ in TABLES | ACCOUNT_TABLES
 
@@ -115,7 +125,8 @@ def test_all_tables_registered_in_metadata() -> None:
 def test_required_columns_and_primary_key(table_name: str) -> None:
     t = table(table_name)
     assert REQUIRED_COLUMNS[table_name] <= set(t.columns.keys())
-    assert [c.name for c in t.primary_key.columns] == ["id"]
+    expected_primary_key = ["domain"] if table_name == "domain_evidence_cache" else ["id"]
+    assert [c.name for c in t.primary_key.columns] == expected_primary_key
 
 
 @pytest.mark.parametrize(("table_name", "column"), sorted(FOREIGN_KEYS))

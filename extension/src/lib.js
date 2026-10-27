@@ -47,6 +47,13 @@ export function normalizeDomain(value) {
   return domain;
 }
 
+export function communityWarningText(reputation) {
+  const count = reputation?.unique_reporters;
+  if (!Number.isSafeInteger(count) || count <= 0) return null;
+  const domain = normalizeDomain(reputation.reported_domain ?? reputation.domain);
+  return `${count} ${count === 1 ? "user" : "users"} reported possible data exposure associated with ${domain}. ${reputation.status === "under_review" ? "Under review." : "Community reported; not a confirmed leak."}`;
+}
+
 /** Development backend URL: only http://127.0.0.1:<port> is allowed in this version. */
 export function validateBaseUrl(value) {
   const raw = String(value ?? "").trim();
@@ -242,6 +249,16 @@ export function createApi(baseUrl, fetchImpl = globalThis.fetch, token = null) {
   return {
     origin,
     connected: Boolean(token),
+    /** Read community counts for the current host; sends no page URL or content. */
+    async websiteReputation(host) {
+      const domain = normalizeDomain(host);
+      const body = await call(`/website-reports/reputation?domain=${encodeURIComponent(domain)}`, { method: "GET" });
+      if (body.domain !== domain || !Number.isSafeInteger(body.unique_reporters) || body.unique_reporters < 0
+          || !["no_reports", "community_reported", "under_review"].includes(body.status)) {
+        throw new ApiError("The backend returned an unexpected website reputation response.");
+      }
+      return body;
+    },
     /** Start connecting this extension; only the secret's hash is sent. */
     async startPairing(secretHash) {
       const body = await call("/extension/pairings", { method: "POST", body: JSON.stringify({ secret_hash: secretHash }) });

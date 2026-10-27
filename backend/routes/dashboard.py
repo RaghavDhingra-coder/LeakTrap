@@ -7,12 +7,12 @@ loopback-only unless the explicit HTTPS public-origin mode is enabled.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Path as PathParam, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, Response
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from backend.config import settings, valid_public_dashboard_origin
@@ -40,7 +40,7 @@ from backend.schemas.call import CallAnalysisPage
 from backend.security import require_user
 from backend.services import dashboard
 from backend.services import call_analysis
-from backend.services.auth import AuthContext
+from backend.services.auth import AuthContext, RateLimited, limit_user
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "dashboard"
 STATIC_FILES = {"app.js": "text/javascript", "styles.css": "text/css"}
@@ -224,6 +224,24 @@ def get_inbox_updates(
 def read_all(auth: AuthContext = Depends(require_user), db: Session = Depends(get_db)) -> InboxReadAllResponse:
     marked = dashboard.mark_all_read(db, auth.user_id)
     return InboxReadAllResponse(marked=marked, unread=dashboard.unread_count(db, auth.user_id))
+
+
+class InboxReevaluateSelection(BaseModel):
+    mail_log_ids: list[Annotated[int, Field(gt=0, le=MAX_BIGINT)]] = Field(min_length=1, max_length=10)
+
+
+@router.post("/api/inbox/reevaluate")
+def reevaluate_inbox(
+    limit: int = Query(10, ge=1, le=10), offset: int = Query(0, ge=0, le=10000),
+    selection: InboxReevaluateSelection | None = Body(None),
+    auth: AuthContext = Depends(require_user), db: Session = Depends(get_db),
+) -> dict:
+    try:
+        limit_user(db, "inbox_reevaluate_user", auth.user_id)
+    except RateLimited:
+        raise HTTPException(429, "Too many evidence refresh requests. Try again later.") from None
+    return dashboard.reevaluate_inbox(db, auth.user_id, limit, offset,
+                                      selection.mail_log_ids if selection else None)
 
 
 @router.get("/api/inbox/{mail_log_id}", response_model=InboxItem, responses={404: {}})

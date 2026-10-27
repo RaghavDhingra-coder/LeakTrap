@@ -77,13 +77,13 @@ elif settings.app_mode == "mobile":
     ROUTERS = (health.router, mobile.router)
 else:
     from backend.routes import (
-        auth, autofill, consent_receipts, dashboard, extension, ingest, matcher, mobile, mobile_devices, signups, sms,
+        auth, autofill, consent_receipts, dashboard, domain_verification, extension, ingest, matcher, mobile, mobile_devices, signups, sms, website_reports,
     )
 
     ROUTERS = (
         health.router, auth.router, auth.account_router, extension.router, signups.router, matcher.router,
-        ingest.router, dashboard.router, sms.router, consent_receipts.router, autofill.router,
-        mobile.router, mobile_devices.router,
+        ingest.router, dashboard.router, domain_verification.router, sms.router, consent_receipts.router, autofill.router,
+        mobile.router, mobile_devices.router, website_reports.router,
     )
 for _router in ROUTERS:
     app.include_router(_router)

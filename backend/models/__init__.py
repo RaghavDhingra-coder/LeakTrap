@@ -9,6 +9,7 @@ from backend.models.auth import (
 )
 from backend.models.complaint_draft import ComplaintDraft
 from backend.models.consent_receipt import ConsentReceipt
+from backend.models.domain_evidence import DomainEvidenceCache, DomainVerificationCredential
 from backend.models.incident import Incident
 from backend.models.leak_edge import LeakEdge
 from backend.models.mail_log import MailLog
@@ -20,6 +21,8 @@ __all__ = [
     "AuthEvent",
     "ComplaintDraft",
     "ConsentReceipt",
+    "DomainEvidenceCache",
+    "DomainVerificationCredential",
     "EmailVerificationToken",
     "ExtensionPairing",
     "Incident",

@@ -182,7 +182,7 @@ def test_web_cookie_cannot_act_as_extension_token(alice) -> None:
 PUBLIC = {
     ("POST", "/mobile/v1/login"),
     ("GET", "/"), ("GET", "/health"), ("GET", "/health/ready"), ("POST", "/auth/register"), ("POST", "/auth/login"),
-    ("POST", "/auth/verify-email"), ("POST", "/ingest/email"), ("POST", "/extension/pairings"),
+    ("POST", "/auth/verify-email"), ("POST", "/ingest/email"), ("POST", "/ingest/alias-status"), ("POST", "/extension/pairings"),
     ("POST", "/extension/pairings/{pairing_id}/token"), ("POST", "/mobile/v1/pairings"),
     ("POST", "/mobile/v1/pairings/{pairing_id}/token"),
 }
@@ -205,6 +205,7 @@ def test_every_private_route_refuses_signed_out_requests(session) -> None:
                 checked += 1
         assert checked >= 20
         assert ("POST", "/ingest/email") in PUBLIC  # protected by its own Worker secret instead
+        assert ("POST", "/ingest/alias-status") in PUBLIC  # protected by the same Worker secret
         assert client.post("/ingest/email", json={}).status_code in (401, 503)
     finally:
         app.dependency_overrides.clear()

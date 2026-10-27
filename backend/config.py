@@ -84,6 +84,10 @@ class Settings:
     dashboard_public_origin: str | None = None
     forwarded_allow_ips: str = "127.0.0.1,::1"
     forwarded_allow_ips_explicit: bool = False
+    # Admin-only global sender-verification configuration. Closed by default.
+    domain_verification_admin_emails: tuple[str, ...] = ()
+    domain_verification_encryption_key: str | None = field(default=None, repr=False)
+    domain_llm_api_key: str | None = field(default=None, repr=False)
 
 
 def _flag(name: str, default: bool) -> bool:
@@ -211,6 +215,12 @@ def get_settings() -> Settings:
         dashboard_public_origin=os.getenv("LEAKTRACE_DASHBOARD_PUBLIC_ORIGIN") or None,
         forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1,::1"),
         forwarded_allow_ips_explicit="FORWARDED_ALLOW_IPS" in os.environ,
+        domain_verification_admin_emails=tuple(
+            item.strip().lower() for item in os.getenv("LEAKTRACE_DOMAIN_VERIFICATION_ADMIN_EMAILS", "").split(",")
+            if item.strip()
+        ),
+        domain_verification_encryption_key=os.getenv("LEAKTRACE_DOMAIN_VERIFICATION_ENCRYPTION_KEY") or None,
+        domain_llm_api_key=os.getenv("DOMAIN_LLM_API_KEY") or None,
     )
 
 

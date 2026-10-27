@@ -3,6 +3,8 @@
 import logging
 from dataclasses import dataclass
 
+from datetime import datetime, timezone
+
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -121,6 +123,22 @@ def get_signup(session: Session, user_id: int, signup_id: int) -> Signup | None:
     return session.scalar(select(Signup).where(Signup.id == signup_id, owned_by(Signup.user_id, user_id)))
 
 
+def set_alias_status(session: Session, user_id: int, signup_id: int, alias_status: str) -> Signup | None:
+    """Change only the owned alias state; signup and email history stay intact."""
+    signup = get_signup(session, user_id, signup_id)
+    if signup is None:
+        return None
+    if not signup.alias:
+        raise ValueError("This website does not have an alias.")
+    if alias_status not in ("active", "revoked"):
+        raise ValueError("Unsupported alias status.")
+    signup.alias_status = alias_status
+    signup.alias_status_changed_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(signup)
+    return signup
+
+
 def find_by_exact_domain(
     session: Session, user_id: int, site_domain: str, limit: int = 10
 ) -> list[Signup]:
@@ -128,7 +146,8 @@ def find_by_exact_domain(
     (no subdomain or parent-domain matching), newest first."""
     query = (
         select(Signup)
-        .where(owned_by(Signup.user_id, user_id), Signup.site_domain == site_domain)
+        .where(owned_by(Signup.user_id, user_id), Signup.site_domain == site_domain,
+               Signup.alias_status == "active")
         .order_by(Signup.created_at.desc(), Signup.id.desc())
         .limit(limit)
     )

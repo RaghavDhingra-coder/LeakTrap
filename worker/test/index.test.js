@@ -33,12 +33,18 @@ function fakeMessage(overrides = {}) {
 
 function fakeFetch(result) {
   const calls = [];
+  const statusCalls = [];
   const impl = async (url, init) => {
+    if (new URL(url).pathname.endsWith("/alias-status")) {
+      statusCalls.push({ url, init });
+      return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+    }
     calls.push({ url, init });
     if (result instanceof Error) throw result;
     return new Response(null, { status: result });
   };
   impl.calls = calls;
+  impl.statusCalls = statusCalls;
   return impl;
 }
 
@@ -67,7 +73,12 @@ function assertNothingSensitiveLogged(extra = []) {
 /** Fetch stub: each call takes the next step (a status, an Error, or "hang" until aborted). */
 function scriptedFetch(...steps) {
   const calls = [];
+  const statusCalls = [];
   const impl = (url, init) => {
+    if (new URL(url).pathname.endsWith("/alias-status")) {
+      statusCalls.push({ url, init });
+      return Promise.resolve(new Response(JSON.stringify({ status: "active" }), { status: 200 }));
+    }
     const step = steps[Math.min(calls.length, steps.length - 1)];
     calls.push({ url, init, at: Date.now() });
     if (step === "hang") {
@@ -77,6 +88,7 @@ function scriptedFetch(...steps) {
     return Promise.resolve(new Response(null, { status: step }));
   };
   impl.calls = calls;
+  impl.statusCalls = statusCalls;
   return impl;
 }
 
@@ -123,14 +135,172 @@ test("missing headers become null and long headers are truncated", () => {
 
 // ---------- delivery: forward the original, then record metadata ----------
 
+test("active alias is verified before forwarding using the authenticated backend route", async () => {
+  const message = fakeMessage();
+  const fetchImpl = scriptedFetch(201);
+  const result = await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST);
+  assert.equal(result.outcome, "forwarded_and_recorded");
+  assert.equal(fetchImpl.statusCalls.length, 1);
+  const [check] = fetchImpl.statusCalls;
+  assert.equal(check.url, "https://api.example.test/ingest/alias-status");
+  assert.equal(check.init.method, "POST");
+  assert.deepEqual(JSON.parse(check.init.body), { recipient: "ab12@leaktrap.xyz" });
+  assert.equal(check.init.headers.authorization, `Bearer ${SECRET}`);
+  assert.deepEqual(message.forwardedTo, [FALLBACK]);
+});
+
+for (const [label, status, expected] of [
+  ["revoked", { status: "revoked" }, "alias_revoked"],
+  ["unknown", { status: "unverifiable" }, "alias_unverified"],
+  ["malformed", { status: "active-ish" }, "alias_unverified"],
+]) {
+  test(`revoked or ${label} alias is never forwarded or recorded`, async () => {
+    const message = fakeMessage();
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify(status), { status: 200 });
+    };
+    const result = await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST);
+    assert.equal(result.outcome, expected);
+    assert.deepEqual(message.forwardedTo, []);
+    assert.ok(message.rejected);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.endsWith("/alias-status"));
+    assertNothingSensitiveLogged();
+  });
+}
+
+test("alias-status outage fails closed and never tries FALLBACK_ADDRESS", async () => {
+  const message = fakeMessage();
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    return new Response("unavailable", { status: 503 });
+  };
+  const result = await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST);
+  assert.equal(result.outcome, "alias_unverified");
+  assert.deepEqual(message.forwardedTo, []);
+  assert.equal(calls.length, 2); // bounded retry
+  assert.ok(calls.every((url) => url.endsWith("/alias-status")));
+});
+
+test("alias-status timeout retries only the status lookup and never forwards", async () => {
+  const message = fakeMessage();
+  const calls = [];
+  const fetchImpl = (url, init) => {
+    calls.push(url);
+    return new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));
+  };
+  assert.equal((await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST)).outcome, "alias_unverified");
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every((url) => url.endsWith("/alias-status")));
+  assert.deepEqual(message.forwardedTo, []);
+});
+
+test("alias-status authentication failure fails closed without trying fallback", async () => {
+  const message = fakeMessage();
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    return new Response("unauthorized", { status: 401 });
+  };
+  const result = await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST);
+  assert.equal(result.outcome, "alias_unverified");
+  assert.deepEqual(message.forwardedTo, []);
+  assert.deepEqual(calls, ["https://api.example.test/ingest/alias-status"]);
+});
+
+test("alias-status network error fails closed", async () => {
+  const message = fakeMessage();
+  const fetchImpl = async () => { throw new TypeError("network unavailable"); };
+  const result = await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST);
+  assert.equal(result.outcome, "alias_unverified");
+  assert.deepEqual(message.forwardedTo, []);
+  assert.match(logged.join(), /network error \(TypeError: network unavailable\)/);
+});
+
+test("missing deployed status route fails closed even when the ingest route still works", async () => {
+  const message = fakeMessage();
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    return new Response("Not Found", { status: 404 });
+  };
+  assert.equal((await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST)).outcome, "alias_unverified");
+  assert.deepEqual(message.forwardedTo, []);
+  assert.ok(message.rejected);
+  assert.deepEqual(calls, ["https://api.example.test/ingest/alias-status"]);
+});
+
+test("revocation before a new delivery blocks it; restoration permits a later delivery", async () => {
+  let status = "active";
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return url.endsWith("/alias-status")
+      ? new Response(JSON.stringify({ status }), { status: 200 })
+      : new Response(null, { status: 201 });
+  };
+  const first = fakeMessage();
+  assert.equal((await handleEmail(first, WITH_FALLBACK, fetchImpl, FAST)).outcome, "forwarded_and_recorded");
+  status = "revoked";
+  const blocked = fakeMessage();
+  assert.equal((await handleEmail(blocked, WITH_FALLBACK, fetchImpl, FAST)).outcome, "alias_revoked");
+  assert.deepEqual(blocked.forwardedTo, []);
+  status = "active";
+  const restored = fakeMessage();
+  assert.equal((await handleEmail(restored, WITH_FALLBACK, fetchImpl, FAST)).outcome, "forwarded_and_recorded");
+  assert.deepEqual(restored.forwardedTo, [FALLBACK]);
+  assert.equal(calls.filter(({ url }) => url.endsWith("/alias-status")).length, 3);
+  assert.equal(calls.filter(({ url }) => url.endsWith("/email")).length, 2);
+});
+
+test("failed status retry cannot bypass the check or reach fallback", async () => {
+  const message = fakeMessage();
+  let attempts = 0;
+  const fetchImpl = async (url) => {
+    assert.ok(url.endsWith("/alias-status"));
+    attempts += 1;
+    return new Response(attempts === 1 ? "unavailable" : JSON.stringify({ status: "revoked" }),
+      { status: attempts === 1 ? 503 : 200 });
+  };
+  assert.equal((await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST)).outcome, "alias_revoked");
+  assert.equal(attempts, 2);
+  assert.deepEqual(message.forwardedTo, []);
+});
+
+for (const response of [
+  new Response(JSON.stringify({ status: "active" }), { status: 201 }),
+  new Response(JSON.stringify({ status: "active" }), { status: 302, headers: { location: "https://other.example/" } }),
+  new Response("{invalid", { status: 200 }),
+]) {
+  test(`unexpected status response HTTP ${response.status} blocks forwarding`, async () => {
+    const message = fakeMessage();
+    const fetchImpl = async (url, init) => {
+      assert.ok(url.endsWith("/alias-status"));
+      assert.equal(init.redirect, "manual");
+      return response.clone();
+    };
+    assert.equal((await handleEmail(message, WITH_FALLBACK, fetchImpl, FAST)).outcome, "alias_unverified");
+    assert.deepEqual(message.forwardedTo, []);
+  });
+}
+
 test("valid ingestion and successful forwarding", async () => {
   const order = [];
   const message = fakeMessage({ async forward(address) { order.push("forward"); this.forwardedTo.push(address); } });
-  const fetchImpl = async (url, init) => { order.push("record"); fetchImpl.calls.push({ url, init }); return new Response(null, { status: 201 }); };
+  const fetchImpl = async (url, init) => {
+    if (new URL(url).pathname.endsWith("/alias-status")) {
+      order.push("status");
+      return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+    }
+    order.push("record"); fetchImpl.calls.push({ url, init }); return new Response(null, { status: 201 });
+  };
   fetchImpl.calls = [];
   const result = await handleEmail(message, WITH_FALLBACK, fetchImpl);
   assert.deepEqual(result, { outcome: "forwarded_and_recorded", status: 201, attempts: 1 });
-  assert.deepEqual(order, ["forward", "record"]);  // delivery never waits on the backend
+  assert.deepEqual(order, ["status", "forward", "record"]);
   assert.deepEqual(message.forwardedTo, [FALLBACK]);
   const [{ url, init }] = fetchImpl.calls;
   assert.equal(url, ENV.INGEST_URL);
@@ -281,7 +451,8 @@ test("parseFallbackAddress never returns the value in its problem or repairs", (
 
 // ---------- recipient domain and ingest configuration ----------
 
-for (const to of ["a@example.com", "a@sub.leaktrap.xyz", "a@leaktrap.xyz.evil.com", ""]) {
+for (const to of ["a@example.com", "a@sub.leaktrap.xyz", "a@leaktrap.xyz.evil.com", "",
+  "a..b@leaktrap.xyz", "a@b@leaktrap.xyz", "bad space@leaktrap.xyz"]) {
   test(`other recipient domain is rejected without forwarding or calling the backend: ${to || "(empty)"}`, async () => {
     const message = fakeMessage({ to });
     const fetchImpl = scriptedFetch(201);
@@ -302,13 +473,14 @@ for (const [name, env] of [
 ]) {
   test(`ingest misconfiguration (${name}) never calls the backend and is not silent`, async () => {
     const fetchImpl = scriptedFetch(201);
-    await assert.rejects(handleEmail(fakeMessage(), env, fetchImpl, FAST), /misconfigured/);
+    const rejected = fakeMessage();
+    assert.equal((await handleEmail(rejected, env, fetchImpl, FAST)).outcome, "alias_unverified");
+    assert.ok(rejected.rejected);
     assert.equal(fetchImpl.calls.length, 0);
     const message = fakeMessage();
     const delivered = await handleEmail(message, { ...env, FALLBACK_ADDRESS: FALLBACK }, fetchImpl, FAST);
-    assert.equal(delivered.outcome, "forwarded_not_recorded");
-    assert.match(delivered.reason, /misconfigured/);
-    assert.deepEqual(message.forwardedTo, [FALLBACK]);
+    assert.equal(delivered.outcome, "alias_unverified");
+    assert.deepEqual(message.forwardedTo, []);
     assert.equal(fetchImpl.calls.length, 0);
     assertNothingSensitiveLogged();
   });
@@ -375,14 +547,13 @@ test("REGRESSION: INGEST_SECRET with a line break caused 'network error: TypeErr
   // What the deployed Worker did: the runtime rejects the header with a TypeError.
   await assert.rejects(runtimeLikeFetch()("https://x.example/", { headers: { authorization: `Bearer ${multiLine}` } }),
     { name: "TypeError", message: "Invalid header value." });
-  // Now: refused before fetch, the original is still forwarded, and the stage is named.
+  // Now: refused before fetch, the message is rejected, and the stage is named.
   const message = fakeMessage();
   const fetchImpl = scriptedFetch(201);
   const result = await handleEmail(message, { ...WITH_FALLBACK, INGEST_SECRET: multiLine }, fetchImpl, FAST);
-  assert.equal(result.outcome, "forwarded_not_recorded");
-  assert.match(result.reason, /misconfigured: INGEST_SECRET contains a line break/);
+  assert.equal(result.outcome, "alias_unverified");
   assert.equal(fetchImpl.calls.length, 0);
-  assert.deepEqual(message.forwardedTo, [FALLBACK]);
+  assert.deepEqual(message.forwardedTo, []);
   assert.match(logged.join(), /\[config\] INGEST_SECRET contains a line break/);
   assertNothingSensitiveLogged(["Verified 2026"]);
 });
@@ -390,8 +561,8 @@ test("REGRESSION: INGEST_SECRET with a line break caused 'network error: TypeErr
 test("a TypeError from fetch is logged with its message, not just its name", async () => {
   const fetchImpl = async () => { throw new TypeError("Invalid header value."); };
   const result = await handleEmail(fakeMessage(), WITH_FALLBACK, fetchImpl, FAST);
-  assert.equal(result.reason, "network error (TypeError: Invalid header value.)");
-  assert.match(logged.join(), /attempt 1: network error \(TypeError: Invalid header value\.\); attempt 2:/);
+  assert.equal(result.outcome, "alias_unverified");
+  assert.match(logged.join(), /\[alias_status\] network error \(TypeError: Invalid header value\.\)/);
 });
 
 for (const [name, value, problem] of [
@@ -445,7 +616,12 @@ test("duplicate Message-ID: a retried delivery sends the identical payload and H
 });
 
 test("redaction: secret values never reach the logs, even inside runtime error messages", async () => {
-  const fetchImpl = async () => { throw new Error(`upstream said Bearer ${SECRET} was bad for ${FALLBACK}`); };
+  const fetchImpl = async (url) => {
+    if (new URL(url).pathname.endsWith("/alias-status")) {
+      return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+    }
+    throw new Error(`upstream said Bearer ${SECRET} was bad for ${FALLBACK}`);
+  };
   const message = fakeMessage(failingForward(new Error(`cannot deliver to ${FALLBACK} using ${SECRET}`)));
   await assert.rejects(handleEmail(message, WITH_FALLBACK, fetchImpl, FAST), (error) => {
     assert.ok(!error.message.includes(SECRET) && !error.message.includes(FALLBACK));

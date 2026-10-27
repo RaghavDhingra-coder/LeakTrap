@@ -22,6 +22,21 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 
 
+@pytest.fixture(autouse=True)
+def mock_public_domain_evidence(monkeypatch):
+    """Ingestion tests never contact public DNS, websites, or Gemini."""
+    from backend.services import domain_evidence
+    from backend.services import gemini
+
+    def collect(domain: str):
+        return ({"domain": domain, "checked_at": "2026-10-27T00:00:00+00:00",
+                 "dns": {"records": [{"type": "A", "data": "93.184.216.34"}]},
+                 "website": {"title": "", "organization_claims": []}, "source_urls": []}, 86400)
+
+    monkeypatch.setattr(domain_evidence, "collect_public_evidence", collect)
+    monkeypatch.setattr(gemini, "enrich_cached_evidence", lambda _session, _evidence: {"status": "not_configured"})
+
+
 def assert_safe_test_database(url: str) -> None:
     database_name = make_url(url).database or ""
     if "test" not in database_name:

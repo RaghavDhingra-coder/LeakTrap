@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    JSON,
     String,
     Text,
     false,
@@ -74,6 +75,8 @@ class MailLog(IdMixin, CreatedAtMixin, Base):
     # Compact SPF/DKIM/DMARC verdicts from Cloudflare's ARC-Authentication-Results
     # header, e.g. "spf=pass dkim=pass dmarc=pass". Not verified by LeakTrace.
     auth_results: Mapped[str | None] = mapped_column(String(100))
+    # Versioned deterministic evidence snapshot used by the dashboard.
+    sender_attribution: Mapped[dict | None] = mapped_column(JSON)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     user: Mapped["User | None"] = relationship()

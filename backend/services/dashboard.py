@@ -16,8 +16,11 @@ from sqlalchemy.orm import Session
 
 from backend.models import ConsentReceipt, Incident, MailLog, Signup
 from backend.services import email_attribution
+from backend.services.sender_classification import RULESET_VERSION, classify_for_email
+from backend.services.sender_domain_match import assess as assess_sender_domain
 from backend.services.email_attribution import alias_link as _alias_link
 from backend.services.ownership import owned_by
+from backend.services.sender_classification import classify as classify_sender
 
 SIGNUP_FILTERS = ("all", "with_receipts", "with_emails", "real_name")
 
@@ -72,6 +75,8 @@ class SignupRow:
     id: int
     site_name: str
     site_domain: str | None
+    alias_status: str
+    alias_status_changed_at: datetime
     alias: str | None
     nickname: str | None
     real_name_required: bool
@@ -125,7 +130,9 @@ def list_signups(
         query.order_by(Signup.created_at.desc(), Signup.id.desc()).limit(limit).offset(offset)
     ).all()
     items = [
-        SignupRow(id=s.id, site_name=s.site_name, site_domain=s.site_domain, alias=s.alias, nickname=s.nickname,
+        SignupRow(id=s.id, site_name=s.site_name, site_domain=s.site_domain,
+                  alias_status=s.alias_status, alias_status_changed_at=s.alias_status_changed_at,
+                  alias=s.alias, nickname=s.nickname,
                   real_name_required=s.real_name_required, receipt_count=r, email_count=e, created_at=s.created_at)
         for s, r, e in rows
     ]
@@ -183,6 +190,8 @@ class EmailRow:
     sender_name: str | None
     sender_email: str | None
     auth_results: str | None
+    sender_attribution: dict | None
+    domain_match: dict
 
 
 def _email_query(user_id: int):
@@ -210,6 +219,18 @@ def _email_row(log: MailLog, signup: Signup | None, owned_signups: list[Signup])
         sender_name=log.sender_name if tracked else None,
         sender_email=log.sender if tracked else None,
         auth_results=log.auth_results if tracked else None,
+        sender_attribution=log.sender_attribution or classify_sender(
+            site_name=site_name, site_domain=site_domain, alias=log.alias,
+            sender_address=log.sender if tracked else None,
+            sender_domain=log.sender_domain, auth_results=log.auth_results if tracked else None,
+            alias_matched=site_name is not None and _effective_status(log, True) == "matched",
+            evaluated_at=log.received_at,
+        ),
+        domain_match=assess_sender_domain(
+            site_domain=site_domain, sender_address=log.sender if tracked else None,
+            stored_sender_domain=log.sender_domain,
+            alias_matched=bool(site_name and _effective_status(log, True) == "matched"),
+        ),
     )
 
 
@@ -323,6 +344,9 @@ class InboxRow:
     match_status: str | None
     match_confidence: str | None
     exposure: list[dict]
+    sender_attribution: dict | None
+    domain_match: dict
+    attribution_pending: bool
 
 
 def identity_label(nickname: str | None, surname: str | None, real_name_used: bool) -> tuple[str | None, str]:
@@ -360,6 +384,22 @@ def _inbox_row(log: MailLog, signup: Signup | None, owned_signups: list[Signup])
         auth_results=log.auth_results if tracked else None,
         match_status=log.match_status, match_confidence=log.match_confidence,
         exposure=email_attribution.email_exposure(log, signup, owned_signups),
+        sender_attribution=log.sender_attribution or classify_sender(
+            site_name=signup.site_name if signup else None,
+            site_domain=signup.site_domain if signup else None, alias=log.alias,
+            sender_address=log.sender if tracked else None,
+            sender_domain=log.sender_domain, auth_results=log.auth_results if tracked else None,
+            alias_matched=bool(signup and status == "matched"), evaluated_at=log.received_at,
+        ),
+        domain_match=assess_sender_domain(
+            site_domain=signup.site_domain if signup else None,
+            sender_address=log.sender if tracked else None,
+            stored_sender_domain=log.sender_domain,
+            alias_matched=bool(signup and status == "matched"),
+        ),
+        attribution_pending=bool(signup and status == "matched" and signup.site_domain
+                                 and log.sender_domain and (not isinstance(log.sender_attribution, dict)
+                                 or log.sender_attribution.get("ruleset_version") != RULESET_VERSION)),
     )
 
 
@@ -385,6 +425,40 @@ def list_inbox(
 def get_inbox_item(session: Session, user_id: int, mail_log_id: int) -> InboxRow | None:
     row = session.execute(_inbox_query(user_id).where(MailLog.id == mail_log_id)).first()
     return _inbox_row(*row, _owned_signups(session, user_id)) if row else None
+
+
+def reevaluate_inbox(session: Session, user_id: int, limit: int, offset: int,
+                     mail_log_ids: list[int] | None = None) -> dict:
+    """Bounded, user-scoped refresh. Recent snapshots are reused for one hour."""
+    from datetime import timedelta, timezone
+    now = datetime.now(timezone.utc)
+    query = _inbox_query(user_id).where(MailLog.ingest_status == "matched", _linked)
+    if mail_log_ids is not None:
+        query = query.where(MailLog.id.in_(mail_log_ids))
+        offset = 0
+    rows = session.execute(query.order_by(MailLog.received_at.desc(), MailLog.id.desc())
+                           .limit(limit).offset(offset)).all()
+    refreshed = skipped = 0
+    for log, signup in rows:
+        previous = log.sender_attribution if isinstance(log.sender_attribution, dict) else {}
+        try:
+            evaluated = datetime.fromisoformat(previous.get("evaluated_at", ""))
+        except (ValueError, TypeError):
+            evaluated = None
+        if (previous.get("ruleset_version") == RULESET_VERSION and evaluated and
+                evaluated.tzinfo and now - evaluated < timedelta(hours=1) and
+                "Evidence expired" not in (previous.get("evidence_status") or {}).values()):
+            skipped += 1
+            continue
+        log.sender_attribution = classify_for_email(
+            session, site_name=signup.site_name, site_domain=signup.site_domain,
+            alias=log.alias, sender_domain=log.sender_domain, sender_address=log.sender,
+            auth_results=log.auth_results, alias_matched=True, evaluated_at=now,
+            correlation_id=str(log.id),
+        )
+        refreshed += 1
+    session.commit()
+    return {"refreshed": refreshed, "skipped": skipped, "limit": limit, "offset": offset}
 
 
 def set_read(session: Session, user_id: int, mail_log_id: int, read: bool) -> InboxRow | None:

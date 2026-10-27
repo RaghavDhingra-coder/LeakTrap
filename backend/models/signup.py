@@ -1,8 +1,9 @@
 """A website signup and the identity variants used for it."""
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, String, false, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
@@ -24,6 +25,12 @@ class Signup(IdMixin, TimestampMixin, Base):
     )
     site_name: Mapped[str] = mapped_column(String(255), nullable=False)
     site_domain: Mapped[str | None] = mapped_column(String(253), index=True)
+    alias_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active", server_default="active", index=True
+    )
+    alias_status_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
     # Full email address (local part and domain), up to the RFC 5321 limit.
     alias: Mapped[str | None] = mapped_column(String(320))
     nickname: Mapped[str | None] = mapped_column(String(100))
@@ -42,6 +49,7 @@ class Signup(IdMixin, TimestampMixin, Base):
     mail_logs: Mapped[list["MailLog"]] = relationship(back_populates="signup", passive_deletes=True)
 
     __table_args__ = (
+        CheckConstraint("alias_status IN ('active', 'revoked')", name="alias_status_allowed"),
         # An email address routes to exactly one mailbox, so a full address
         # (case-insensitive) may belong to only one signup. Different users on a
         # shared domain simply use different local parts.

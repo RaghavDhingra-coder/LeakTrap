@@ -346,6 +346,23 @@ td.empty-cell { padding: 0; }
 .badge-inbox-unmatched::before { background: transparent; border: 1.5px solid currentColor; width: 7px; height: 7px; }
 .badge-inbox-failed { background: var(--danger-soft); color: var(--danger); }
 .badge-inbox-failed::before { border-radius: 1px; transform: rotate(45deg); }
+
+.sender-attribution { margin: 10px 0; padding: 12px 14px; border-radius: 10px; background: var(--surface-2); color: var(--text); }
+.sender-attribution > strong { display: inline-block; margin-bottom: 8px; }
+.domain-match { margin-bottom: 9px; }
+.domain-match strong { color: var(--text); }
+.domain-match-verified strong { color: var(--teal); }
+.domain-match-not-verified strong { color: var(--warn); }
+.domain-match p { margin: 3px 0 0; color: var(--muted); }
+.sender-attribution p { margin: 8px 0 0; }
+.sender-attribution-facts { display: grid; grid-template-columns: minmax(115px, .4fr) 1fr; gap: 4px 12px; margin: 0; overflow-wrap: anywhere; }
+.sender-attribution-facts dt { color: var(--muted); }
+.sender-attribution-facts dd { margin: 0; }
+.sender-verified-sender { border-left: 3px solid var(--teal); }
+.sender-possible-third-party-exposure { border-left: 3px solid var(--warn); }
+.sender-suspicious { border-left: 3px solid var(--danger); }
+.sender-unknown { border-left: 3px solid var(--border-strong); }
+.settings #domain-verification-settings { grid-column: 1 / -1; }
 .badge-neutral { background: var(--surface-3); color: var(--text-2); }
 .badge-neutral::before { display: none; }
 

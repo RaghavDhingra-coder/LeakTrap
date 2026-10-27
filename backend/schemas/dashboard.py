@@ -41,6 +41,8 @@ class DashboardSignup(BaseModel):
     id: int
     site_name: str
     site_domain: str | None
+    alias_status: Literal["active", "revoked"]
+    alias_status_changed_at: datetime
     alias: str | None
     nickname: str | None
     real_name_required: bool
@@ -64,6 +66,8 @@ class DashboardEmail(BaseModel):
     alias: str | None
     unread: bool
     exposure: list[ExposureSignal]
+    sender_attribution: dict | None = Field(default=None, description="Deterministic sender, authentication, and possible-exposure evidence snapshot.")
+    domain_match: dict = Field(description="Domain-only comparison with the registered website; does not authenticate the email.")
     tracked: bool = Field(description="False for historical records without stored inbox details.")
     subject: str | None = Field(description="Untrusted subject; absent for historical records.")
     sender_name: str | None = Field(description="Untrusted From display name.")
@@ -118,6 +122,8 @@ class SignupDetailResponse(BaseModel):
     id: int
     site_name: str
     site_domain: str | None
+    alias_status: Literal["active", "revoked"]
+    alias_status_changed_at: datetime
     alias: str | None
     nickname: str | None
     surname_variant: str | None
@@ -188,6 +194,9 @@ class InboxItem(BaseModel):
     match_status: str | None
     match_confidence: str | None
     exposure: list[ExposureSignal]
+    sender_attribution: dict | None = Field(default=None, description="Deterministic sender, authentication, and possible-exposure evidence snapshot.")
+    domain_match: dict = Field(description="Domain-only comparison with the registered website; does not authenticate the email.")
+    attribution_pending: bool = Field(default=False, description="This matched email needs a current public-domain evaluation.")
 
 
 class InboxPage(BaseModel):

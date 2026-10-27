@@ -4,6 +4,7 @@ pydantic==2.14.1
 uvicorn==0.54.0
 python-dotenv==1.2.4
 argon2-cffi==25.1.0
+cryptography==50.0.2
 
 # Database (PostgreSQL only)
 SQLAlchemy==2.1.6

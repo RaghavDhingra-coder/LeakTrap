@@ -46,6 +46,7 @@ class Me(BaseModel):
     email_verified: bool
     csrf_token: str = Field(description="Send as X-CSRF-Token on every state-changing request.")
     email_delivery_configured: bool
+    is_domain_verification_admin: bool = False
 
 
 class Message(BaseModel):

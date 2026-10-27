@@ -249,7 +249,10 @@
               <h2>Inbox</h2>
               <p class="page-desc">Email delivered to your aliases. Each message is linked to a website only when it was sent to that website's exact alias. Message bodies and attachments are never received or stored.</p>
             </div>
-            <button type="button" id="inbox-read-all" class="btn btn-secondary"><svg class="icon" aria-hidden="true"><use href="#i-check"></use></svg><span>Mark all as read</span></button>
+            <div class="row">
+              <button type="button" id="inbox-reevaluate" class="btn btn-secondary"><svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg><span>Refresh sender evidence</span></button>
+              <button type="button" id="inbox-read-all" class="btn btn-secondary"><svg class="icon" aria-hidden="true"><use href="#i-check"></use></svg><span>Mark all as read</span></button>
+            </div>
           </header>
           <div class="toolbar">
             <div role="group" aria-label="Show" id="inbox-filters" class="segmented">
@@ -451,6 +454,12 @@
             </table>
           </div>
           <div class="pager" data-pager="emails"></div>
+          <section class="card panel" aria-labelledby="my-reports-title">
+            <h3 id="my-reports-title">My website reports</h3>
+            <p class="hint">Community reports are possible exposure leads, not confirmed leaks.</p>
+            <div id="my-reports-status" class="status" aria-live="polite"></div>
+            <ul id="my-reports-list" class="compact-list"></ul>
+          </section>
           <section id="email-detail" class="detail" aria-labelledby="email-detail-title" tabindex="-1" hidden>
             <div class="detail-head">
               <h3 id="email-detail-title">Match details</h3>
@@ -552,6 +561,31 @@
                 <button type="button" data-theme-choice="light" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-sun"></use></svg><span>Light</span></button>
               </div>
               <p class="hint">Saved in this browser only.</p>
+            </section>
+
+            <section id="domain-verification-settings" class="card panel" aria-labelledby="settings-domain-verification" hidden>
+              <div class="panel-head"><h3 id="settings-domain-verification">Domain Verification Settings</h3></div>
+              <p class="hint">Gemini Search can suggest public sources when website evidence is incomplete. It receives only the domain. Backend rules make the final classification.</p>
+              <p id="gemini-key-state" class="hint" aria-live="polite"></p>
+              <form id="gemini-key-form" class="form" novalidate>
+                <div class="field">
+                  <label for="gemini-api-key">Gemini API key</label>
+                  <input id="gemini-api-key" name="api_key" type="password" autocomplete="new-password" spellcheck="false" maxlength="512" placeholder="Enter key to save or replace" required>
+                </div>
+                <div class="row">
+                  <button id="gemini-key-save" type="submit" class="btn btn-primary">Save key</button>
+                  <button id="gemini-key-test" type="button" class="btn btn-secondary">Test connection</button>
+                  <button id="gemini-key-remove" type="button" class="btn btn-secondary">Remove key</button>
+                </div>
+              </form>
+              <p id="gemini-key-status" class="status" aria-live="polite"></p>
+            </section>
+
+            <section id="website-report-review" class="card panel" aria-labelledby="website-report-review-title" hidden>
+              <h3 id="website-report-review-title">Review community reports</h3>
+              <p class="hint">Review can dismiss or restore community leads. It cannot confirm a leak.</p>
+              <p id="website-report-review-status" class="status" aria-live="polite"></p>
+              <ul id="website-report-review-list" class="compact-list"></ul>
             </section>
 
             <section class="card panel" aria-labelledby="settings-password">

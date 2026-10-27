@@ -1,10 +1,9 @@
 """Recipient attribution and possible exposure clues from a user's own signups."""
-import re
-
 from sqlalchemy import and_, func
 from backend.models import MailLog, Signup
 from backend.services.ownership import owned_by
 from backend.services.domains import normalize_email, parent_domains
+from backend.services.sender_classification import classify
 
 # Stored addresses are canonical ASCII. Also validates historical rows before a join
 # can expose a website. PostgreSQL and Python domain validation use the same label limits.
@@ -57,46 +56,22 @@ EXPOSURE_CAVEAT = (
 
 
 def email_exposure(log: MailLog, recipient_signup: Signup | None, owned_signups: list[Signup]) -> list[dict]:
-    """Suggest sources only from the owner's recorded markers and stored email metadata.
-
-    Email bodies are unavailable. A nickname is considered only in the subject,
-    never in the From display name (which describes the claimed sender).
-    """
+    """Return a possible-source lead only with curated ownership plus DMARC evidence."""
     if effective_status(log.ingest_status, recipient_signup is not None) != "matched":
         return []
-    sender_domain = (log.sender_domain or "").lower()
-    if not sender_domain:
+    assessment = log.sender_attribution or classify(
+        site_name=recipient_signup.site_name if recipient_signup else None,
+        site_domain=recipient_signup.site_domain if recipient_signup else None,
+        alias=log.alias, sender_domain=log.sender_domain, auth_results=log.auth_results,
+        alias_matched=recipient_signup is not None,
+        evaluated_at=log.received_at,
+    )
+    if not assessment.get("possible_exposure") or not recipient_signup:
         return []
-    out: list[dict] = []
-
-    def add(signup: Signup, marker_type: str, marker: str, confidence: str) -> None:
-        if signup.site_domain and signup.site_domain in parent_domains(sender_domain):
-            return
-        out.append({
-            "signup_id": signup.id, "site_name": signup.site_name,
-            "marker_type": marker_type, "marker": marker,
-            "observed_source": sender_domain, "expected_domain": signup.site_domain,
-            "confidence": confidence if signup.site_domain else "low",
-            "explanation": (
-                f"This message uses your {('alias for' if marker_type == 'recipient_alias' else 'nickname recorded for')} "
-                f"{signup.site_name}. Its claimed sender domain is {sender_domain}. "
-                + (f"That is outside the recorded domain {signup.site_domain}. " if signup.site_domain else
-                   "No website domain was recorded, so this sender cannot be compared with it. ")
-                + f"{signup.site_name} is a possible source of the detail."
-            ), "caveat": EXPOSURE_CAVEAT,
-        })
-
-    if recipient_signup:
-        add(recipient_signup, "recipient_alias", log.alias, "medium")
-    subject = log.subject or ""
-    if subject:
-        nickname_owners: dict[str, list[Signup]] = {}
-        for signup in owned_signups:
-            nickname = (signup.nickname or "").strip().lower()
-            if len(nickname) >= 3:
-                nickname_owners.setdefault(nickname, []).append(signup)
-        for nickname, sites in nickname_owners.items():
-            if (len(sites) == 1 and sites[0].id != getattr(recipient_signup, "id", None)
-                    and re.search(rf"(?<!\w){re.escape(nickname)}(?!\w)", subject, re.I)):
-                add(sites[0], "nickname_mention", sites[0].nickname, "low")
-    return out
+    return [{
+        "signup_id": recipient_signup.id, "site_name": recipient_signup.site_name,
+        "marker_type": "recipient_alias", "marker": log.alias or "",
+        "observed_source": assessment.get("sender_domain"),
+        "expected_domain": recipient_signup.site_domain, "confidence": "medium",
+        "explanation": assessment["explanation"], "caveat": EXPOSURE_CAVEAT,
+    }]

@@ -164,6 +164,7 @@ const context = { document: { addEventListener() {} }, Intl, console };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(process.argv[1], "utf8") + `
   globalThis.__run = (m) => ({ identity: identityText(m), note: notificationText(m), sender: senderText(m),
+                               sender_status: senderStatusLabel(m.sender_status),
                                reason: reasonText(m.status_reason), unread: unreadLabel(m.n ?? 0) });`, context);
 process.stdout.write(JSON.stringify(JSON.parse(fs.readFileSync(0, "utf8")).map((m) => context.__run(m))));
 """
@@ -195,6 +196,42 @@ def test_inbox_text_uses_stored_identity_and_never_invents_one() -> None:
     assert deleted["identity"] == "an unknown alias" and deleted["sender"] == "Unknown sender"
     assert deleted["reason"].startswith("Not linked to any of your websites")
     assert nick["reason"] is None
+
+
+def test_dashboard_sender_status_labels_are_specific_and_safe() -> None:
+    labels = run_helpers([
+        {"sender_status": "Verified Sender"},
+        {"sender_status": "Possible Third-Party Exposure"},
+        {"sender_status": "Suspicious"},
+        {"sender_status": "Unknown"},
+        {"sender_status": "arbitrary"},
+    ])
+    assert [row["sender_status"] for row in labels] == [
+        "Verified Sender", "Possible Third-Party Exposure", "Suspicious", "Unknown", "Unknown",
+    ]
+    app = (DASHBOARD_DIR / "app.js").read_text()
+    assert "senderAttributionView(m.sender_attribution, m.domain_match)" in app
+    assert "senderAttributionView(d.sender_attribution, d.domain_match)" in app
+    assert 'Domain match: ${matchStatus}' in app
+    assert '"Not Verified"' in app
+    html = (DASHBOARD_DIR / "index.html").read_text()
+    assert 'id="inbox-reevaluate"' in html
+    assert 'addEventListener("click", reevaluateInbox)' in app
+    assert '/inbox/reevaluate?limit=10&offset=' in app
+    assert 'item.attribution_pending' in app
+    assert 'mail_log_ids: mailLogIds' in app
+    assert 'DOMAIN_RELATIONSHIP_LABELS' in app
+    assert 'Sender DNS evidence' in app
+
+
+def test_domain_verification_settings_are_admin_only_and_masked() -> None:
+    html = (DASHBOARD_DIR / "index.html").read_text()
+    app = (DASHBOARD_DIR / "app.js").read_text()
+    assert 'id="domain-verification-settings"' in html
+    assert 'id="gemini-api-key" name="api_key" type="password"' in html
+    assert 'id="gemini-key-save"' in html and 'id="gemini-key-test"' in html and 'id="gemini-key-remove"' in html
+    assert 'verificationSettings.hidden = !me.is_domain_verification_admin' in app
+    assert 'masked_api_key' in app
 
 
 # Loads app.js with a stub document and runs the pure chart helpers.

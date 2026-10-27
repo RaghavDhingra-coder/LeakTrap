@@ -82,7 +82,11 @@ def _me(db: Session, session_id: int, csrf_token: str) -> Me:
 
     user = db.get(User, db.get(UserSession, session_id).user_id)
     return Me(email=user.email, email_verified=user.email_verified_at is not None, csrf_token=csrf_token,
-              email_delivery_configured=auth_service.email_delivery_configured())
+              email_delivery_configured=auth_service.email_delivery_configured(),
+              is_domain_verification_admin=bool(
+                  user.email and user.email.lower() in settings.domain_verification_admin_emails
+                  and user.email_verified_at is not None
+              ))
 
 
 @router.get("/me", response_model=Me)

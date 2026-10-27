@@ -12,12 +12,13 @@ ALIAS_DOMAIN = "leaktrap.xyz"
 # Public HTTPS URL of the backend's ingest endpoint: the Render service from
 # render.yaml, e.g. "https://leaktrace-ingest.onrender.com/ingest/email" (use the
 # exact URL Render shows). Cloudflare cannot reach localhost. Must be https.
-# While empty, every message goes to FALLBACK_ADDRESS or is refused.
+# The service at this URL must also serve POST /ingest/alias-status. If that
+# check is missing or unavailable, the Worker rejects mail before forwarding.
 INGEST_URL = "https://leaktrace-ingest.onrender.com/ingest/email"
 # FALLBACK_ADDRESS is not set here: this file is public. Set it as a secret
 # (npx wrangler@4 secret put FALLBACK_ADDRESS) to a verified Email Routing
-# destination address that receives the original message whenever the backend
-# does not accept it.
+# destination address that receives the original message only after the
+# backend confirms the recipient alias is active.
 
 # Secret (never put it here): npx wrangler@4 secret put INGEST_SECRET
 # It must equal LEAKTRACE_INGEST_SECRET on the backend.
