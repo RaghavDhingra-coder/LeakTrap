@@ -10,3 +10,4 @@ cryptography==50.0.2
 SQLAlchemy==2.1.6
 psycopg[binary]==3.3.6
 alembic==1.20.1
+httpx
